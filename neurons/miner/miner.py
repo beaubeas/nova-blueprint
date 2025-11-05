@@ -7,6 +7,7 @@ import bittensor as bt
 import pandas as pd
 from rdkit import Chem
 from pathlib import Path
+import random
 
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__)))
 PARENT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -53,8 +54,9 @@ def iterative_sampling_loop(
     top_pool = pd.DataFrame(columns=["name", "smiles", "InChIKey", "score"])
 
     iteration = 0
-    while iteration * n_samples < len(data):
-        sampler_data = {"molecules": data['product_name'].iloc[iteration * n_samples:(iteration + 1) * n_samples].tolist()}
+    while True:
+        random.seed(iteration + 42)
+        sampler_data = {"molecules": random.sample(data['product_name'].tolist(), n_samples)}
         print(sampler_data)
         with open(output_path, "w") as f:
             json.dump(sampler_data, f, ensure_ascii=False, indent=2)
@@ -84,15 +86,13 @@ def iterative_sampling_loop(
         top_pool = top_pool.head(config["num_molecules"])
         bt.logging.info(f"[Miner] Top pool now has {len(top_pool)} molecules after merging")
         bt.logging.info(f"[Miner] Top molecules: {top_pool[['name', 'score']]}")
+        bt.logging.info(f"[Miner] Average top score: {top_pool['score'].mean()}")
         # format to accepted format
         top_entries = {"molecules": top_pool["name"].tolist()}
 
         # write to file
         with open(output_path, "w") as f:
             json.dump(top_entries, f, ensure_ascii=False, indent=2)
-
-        bt.logging.info(f"[Miner] Wrote {config['num_molecules']} top molecules to {output_path}")
-        bt.logging.info(f"[Miner] Average score: {top_pool['score'].mean()}")
         
 
 def calculate_final_scores(score_dict: dict, 
