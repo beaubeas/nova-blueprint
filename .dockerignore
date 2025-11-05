@@ -1,0 +1,13 @@
+venv
+.venv
+.env
+.miner_runs/
+results/
+data/miner_runs/
+data/results/
+*.log
+__pycache__
+
+.git
+.gitignore
+.env
