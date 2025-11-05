@@ -53,7 +53,7 @@ def iterative_sampling_loop(
     top_pool = pd.DataFrame(columns=["name", "smiles", "InChIKey", "score"])
 
     iteration = 0
-    while True:
+    while iteration * n_samples < len(data):
         sampler_data = {"molecules": data['product_name'].iloc[iteration * n_samples:(iteration + 1) * n_samples].tolist()}
         print(sampler_data)
         with open(output_path, "w") as f:
@@ -93,21 +93,7 @@ def iterative_sampling_loop(
 
         bt.logging.info(f"[Miner] Wrote {config['num_molecules']} top molecules to {output_path}")
         bt.logging.info(f"[Miner] Average score: {top_pool['score'].mean()}")
-        if top_pool['score'].mean() <1.0 and iteration%80==5:
-            bt.logging.info(f"[Miner] Target average score not reached to 1.0 yet, continuing other type sampling...")
-            iteration +=75
-        if top_pool['score'].mean() <1.5 and iteration%80==10:
-            bt.logging.info(f"[Miner] Target average score not reached to 1.5 yet, continuing other type sampling...")
-            iteration +=70
         
-        if top_pool['score'].mean() <2.0 and iteration%80==15:
-            bt.logging.info(f"[Miner] Target average score not reached to 2.0 yet, continuing other type sampling...")
-            iteration += 65
-        
-        if top_pool['score'].mean() <2.5 and iteration%80==20:
-            bt.logging.info(f"[Miner] Target average score not reached to 2.5 yet, continuing other type sampling...")
-            iteration +=60
-            
 
 def calculate_final_scores(score_dict: dict, 
         sampler_data: dict, 
