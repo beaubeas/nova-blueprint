@@ -24,7 +24,7 @@ from nova_ph2.combinatorial_db.reactions import get_smiles_from_reaction
 # Always resolve DB_PATH from the installed/available nova_ph2 package location.
 import nova_ph2
 DB_PATH = str(Path(nova_ph2.__file__).resolve().parent / "combinatorial_db" / "molecules.sqlite")
-data = pd.read_csv('data.csv')
+data = pd.read_csv('neurons/miner/data.csv')
 def get_config(input_file: os.path = os.path.join(BASE_DIR, "input.json")):
     """
     Get config from input file
@@ -48,16 +48,21 @@ def iterative_sampling_loop(
       3) Merge with previous top x, deduplicate, sort, select top x
       4) Write top x to file (overwrite) each iteration
     """
-    n_samples = config["num_molecules"] * 50
+    n_samples = config["num_molecules"] * 5  # Sample 5x the number of molecules needed to ensure diversity
 
     top_pool = pd.DataFrame(columns=["name", "smiles", "InChIKey", "score"])
 
     iteration = 0
     while True:
         sampler_data = {"molecules": data['product_name'].iloc[iteration * n_samples:(iteration + 1) * n_samples].tolist()}
+        print(sampler_data)
         with open(output_path, "w") as f:
             json.dump(sampler_data, f, ensure_ascii=False, indent=2)
+        
+        with open(sampler_file_path, "w") as f:
+            json.dump(sampler_data, f, ensure_ascii=False, indent=2)
         iteration += 1
+        bt.logging.info(f"[Miner] Iteration {iteration}: sampling {n_samples} molecules: Example")
         bt.logging.info(f"[Miner] Iteration {iteration}: sampling {n_samples} molecules")
 
         score_dict = score_molecules_json(sampler_file_path, 
@@ -88,6 +93,21 @@ def iterative_sampling_loop(
 
         bt.logging.info(f"[Miner] Wrote {config['num_molecules']} top molecules to {output_path}")
         bt.logging.info(f"[Miner] Average score: {top_pool['score'].mean()}")
+        if top_pool['score'].mean() <1.0 and iteration%80==5:
+            bt.logging.info(f"[Miner] Target average score not reached to 1.0 yet, continuing other type sampling...")
+            iteration +=75
+        if top_pool['score'].mean() <1.5 and iteration%80==10:
+            bt.logging.info(f"[Miner] Target average score not reached to 1.5 yet, continuing other type sampling...")
+            iteration +=70
+        
+        if top_pool['score'].mean() <2.0 and iteration%80==15:
+            bt.logging.info(f"[Miner] Target average score not reached to 2.0 yet, continuing other type sampling...")
+            iteration += 65
+        
+        if top_pool['score'].mean() <2.5 and iteration%80==20:
+            bt.logging.info(f"[Miner] Target average score not reached to 2.5 yet, continuing other type sampling...")
+            iteration +=60
+            
 
 def calculate_final_scores(score_dict: dict, 
         sampler_data: dict, 

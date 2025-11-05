@@ -8,4 +8,4 @@ data/results/
 *.log
 __pycache__
 .vscode/
-*.json
+neurons/miner/*.json
