@@ -38,27 +38,32 @@ def iterative_sampling_loop(
     output_path: str,
     config: dict
 ) -> None:
-    
-    n_samples = config["num_molecules"] * 5  # Sample 50x the number of molecules needed to ensure diversity
+
+    n_samples = config["num_molecules"] * 5  # Sample 5x the number of molecules needed to ensure diversity
     rxn_id = int(config["allowed_reaction"].split(":")[-1])
     top_pool = pd.DataFrame(columns=["name", "smiles", "InChIKey", "score"])
-
+    specific_pool = []
     iteration = 0
     while True:
+        if rxn_id == 5:
+            specific_pool = [193892,190177,189908,189662,189449,194399,193228,189448,196793,193506]
+        if rxn_id == 4:
+            specific_pool = [221193,218682,219061,219046,218998,218681,213053,212649,212650,215170]
+
         data = generate_valid_random_molecules_batch(
-        rxn_id, n_samples, db_path, config, batch_size=n_samples, seed=iteration + 42
+            rxn_id, n_samples, db_path, config, batch_size=n_samples, seed=iteration + 42, specific_pool=specific_pool
         )
 
         data = data.reset_index(drop=True)
         data['Target'] = target_scores_from_data(data['smiles'], config['target_sequences'])
         data = data.sort_values(by='Target', ascending=False)
         max_value = data['Target'].max()
-        if max_value > 7.0:
-            data = data[data['Target']>7.0]
-            bt.logging.info(f"[Miner] After target scoring, {len(data)} molecules remain with Target > 7.0.")
+        if max_value > 6.5:
+            data = data[data['Target']>6.5]
+            bt.logging.info(f"[Miner] After target scoring, {len(data)} molecules remain with Target > 6.5.")
 
         else:
-            data = data.iloc[:10]
+            data = data.iloc[:20]
             bt.logging.info(f"[Miner] After target scoring, {len(data)} molecules selected.")
 
         if data.empty:
@@ -75,6 +80,11 @@ def iterative_sampling_loop(
         top_pool = top_pool.drop_duplicates(subset=["InChIKey"], keep="first")
         top_pool = top_pool.sort_values(by="score", ascending=False)
         top_pool = top_pool.head(config["num_molecules"])
+        if rxn_id not in [4,5]:
+            top_data = [int(i.split(':')[2]) for i in  top_pool.head(3)['name'].tolist()]
+            bt.logging.info(f"[Miner] Top 3 molecule IDs this iteration: {top_data}")
+            specific_pool = list(set(top_data + specific_pool) -set(specific_pool))
+            bt.logging.info(f"[Miner] Specific pool now has {specific_pool} molecules after merging.")
         bt.logging.info(f"[Miner] Top pool now has {len(top_pool)} molecules after merging, Average top score: {top_pool['score'].mean()}")
         # format to accepted format
         top_entries = {"molecules": top_pool["name"].tolist()}

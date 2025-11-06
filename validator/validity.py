@@ -51,11 +51,15 @@ def get_molecules_by_role(role_mask: int, db_path: str) -> List[Tuple[int, str, 
         return []
 
 def generate_molecules_from_pools(rxn_id: int, n: int, molecules_A: List[Tuple], molecules_B: List[Tuple], 
-                                molecules_C: List[Tuple], is_three_component: bool, seed: int = 42) -> List[str]:
+                                molecules_C: List[Tuple], is_three_component: bool, seed: int = 42, specific_pool: List[int] = []) -> List[str]:
     mol_ids = []
     random.seed(seed)
-    
-    for i in range(n):
+    tmp = 0
+    if rxn_id in [4,5]:
+        tmp = n//len(specific_pool) if len(specific_pool) > 0 else n
+    else:
+        tmp = n//2 if len(specific_pool) > 0 else n
+    for i in range(tmp):
         try:
             # Randomly select molecules for each role
             mol_A = random.choice(molecules_A)
@@ -77,11 +81,33 @@ def generate_molecules_from_pools(rxn_id: int, n: int, molecules_A: List[Tuple],
             bt.logging.error(f"Error generating molecule {i+1}/{n}: {e}")
             mol_ids.append(None)
     
+    for i in range(tmp, n):
+        try:
+            # Randomly select molecules for each role
+            mol_A = random.choice(specific_pool)
+            mol_B = random.choice(molecules_B)
+            
+            mol_id_A = mol_A
+            mol_id_B, smiles_B, role_mask_B = mol_B
+            
+            if is_three_component:
+                mol_C = random.choice(molecules_C)
+                mol_id_C, smiles_C, role_mask_C = mol_C
+                product_name = f"rxn:{rxn_id}:{mol_id_A}:{mol_id_B}:{mol_id_C}"
+            else:
+                product_name = f"rxn:{rxn_id}:{mol_id_A}:{mol_id_B}"
+            
+            mol_ids.append(product_name)
+            
+        except Exception as e:
+            bt.logging.error(f"Error generating molecule {i+1}/{n}: {e}")
+            mol_ids.append(None)
+    
     return mol_ids
 
 def generate_valid_random_molecules_batch(
     rxn_id: int, n_samples: int, db_path: str, subnet_config: dict, 
-    batch_size: int = 200, seed: int = 42
+    batch_size: int = 200, seed: int = 42, specific_pool: List[int] = []
 ) -> pd.DataFrame:
     """
     Generate a DataFrame of valid, unique molecules for a given reaction using pandas for all batch operations.
@@ -104,15 +130,15 @@ def generate_valid_random_molecules_batch(
     iteration = 0
     progress_bar = tqdm(total=n_samples, desc="Creating valid molecules", unit="molecule")
     while len(valid_rows) < n_samples:
+        iteration += 1
         needed = n_samples - len(valid_rows)
-        batch_size_actual = min(batch_size, needed * 10)
+        batch_size_actual = min(batch_size, needed * 2)
         batch_molecules = generate_molecules_from_pools(
-            rxn_id, batch_size_actual, molecules_A, molecules_B, molecules_C, is_three_component, seed + iteration
+            rxn_id, batch_size_actual, molecules_A, molecules_B, molecules_C, is_three_component, seed + iteration*2, specific_pool=specific_pool
         )
         batch_df = pd.DataFrame({"name": batch_molecules})
         batch_df = validate_molecules(batch_df, subnet_config)
         if batch_df.empty:
-            iteration += 1
             continue
         # Compute InChIKey for deduplication
         batch_df["InChIKey"] = batch_df["smiles"].apply(generate_inchikey)
@@ -128,7 +154,6 @@ def generate_valid_random_molecules_batch(
             progress_bar.update(1)
             if len(valid_rows) >= n_samples:
                 break
-        iteration += 1
         
     progress_bar.close()
     if not valid_rows:
