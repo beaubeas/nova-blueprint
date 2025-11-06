@@ -44,39 +44,17 @@ def validate_molecules_and_calculate_entropy(
         for molecule in data["molecules"]:
             try:
                 smiles = get_smiles(molecule)
-                if not smiles:
-                    bt.logging.error(f"No valid SMILES found for UID={uid}, molecule='{molecule}'")
-                    valid_smiles = []
-                    valid_names = []
-                    break
-                
-                if get_heavy_atom_count(smiles) < config['min_heavy_atoms']:
-                    bt.logging.warning(f"UID={uid}, molecule='{molecule}' has insufficient heavy atoms")
-                    valid_smiles = []
-                    valid_names = []
-                    break
-
-                try:
-                    mol = Chem.MolFromSmiles(smiles)
-                    num_rotatable_bonds = Descriptors.NumRotatableBonds(mol)
-                    if num_rotatable_bonds < config['min_rotatable_bonds'] or num_rotatable_bonds > config['max_rotatable_bonds']:
-                        bt.logging.warning(f"UID={uid}, molecule='{molecule}' has an invalid number of rotatable bonds")
-                        valid_smiles = []
-                        valid_names = []
-                        break
-                except Exception as e:
-                    bt.logging.error(f"Molecule is not parseable by RDKit for UID={uid}, molecule='{molecule}': {e}")
-                    valid_smiles = []
-                    valid_names = []
-                    break
-     
-                valid_smiles.append(smiles)
-                valid_names.append(molecule)
+                if smiles:
+                    try:
+                        mol = Chem.MolFromSmiles(smiles)
+                        num_rotatable_bonds = Descriptors.NumRotatableBonds(mol)
+                        if num_rotatable_bonds >= config['min_rotatable_bonds'] and num_rotatable_bonds <= config['max_rotatable_bonds']:
+                            valid_smiles.append(smiles)
+                            valid_names.append(molecule)
+                    except Exception as e:
+                        continue
             except Exception as e:
-                bt.logging.error(f"Error validating molecule for UID={uid}, molecule='{molecule}': {e}")
-                valid_smiles = []
-                valid_names = []
-                break
+                continue
             
         # Check for chemically identical molecules
         if valid_smiles:
@@ -156,9 +134,6 @@ def validate_molecules_sampler(
             
             smiles = get_smiles(molecule)
             if not smiles:
-                continue
-            
-            if get_heavy_atom_count(smiles) < config['min_heavy_atoms']:
                 continue
 
             try:    

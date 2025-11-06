@@ -215,6 +215,7 @@ def score_molecules_json(
         bt.logging.error("No molecules found in JSON file.")
         return None
 
+
     # Initialize scoring structure
     score_dict = {
         uid: {
@@ -227,26 +228,15 @@ def score_molecules_json(
         for uid in uid_to_data
     }
 
+
     # Check validity of submissions
     valid_molecules_by_uid = validate_molecules_and_calculate_entropy(uid_to_data, score_dict, subnet_config)
-    
+    bt.logging.info(f"Valid molecules by UID: {valid_molecules_by_uid}")
     # Score with PSICHIC
     if psichic is None:
         psichic = PsichicWrapper()
-    score_all_proteins_psichic(target_proteins,
-                                antitarget_proteins,
-                                score_dict,
-                                valid_molecules_by_uid,
-                                uid_to_data,
-                                32
-                                )
+    score_all_proteins_psichic(target_proteins, antitarget_proteins, score_dict, valid_molecules_by_uid, uid_to_data, 32 )
     psichic.cleanup_model()
     psichic = None
 
     return score_dict
-
-def calculate_histogram(score_list: list[float]) -> np.array:
-    """
-    Calculate the histogram of a list of scores.
-    """
-    return np.histogram(score_list, bins=100, range=(0, 10))

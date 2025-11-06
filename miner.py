@@ -18,6 +18,7 @@ if LIBS_DIR not in sys.path:
     sys.path.insert(0, LIBS_DIR)
 
 from validator.scoring import score_molecules_json
+from validator.validity import validate_molecules_sampler
 from combinatorial_db.reactions import get_smiles_from_reaction
 
 
@@ -54,42 +55,46 @@ def iterative_sampling_loop(
     while True:
         random.seed(iteration + 42)
         sampler_data = {"molecules": random.sample(data['product_name'].tolist(), n_samples)}
-        print(sampler_data)
-        with open(output_path, "w") as f:
-            json.dump(sampler_data, f, ensure_ascii=False, indent=2)
-        
-        with open(sampler_file_path, "w") as f:
-            json.dump(sampler_data, f, ensure_ascii=False, indent=2)
-        iteration += 1
-        bt.logging.info(f"[Miner] Iteration {iteration}: sampling {n_samples} molecules: Example")
-        bt.logging.info(f"[Miner] Iteration {iteration}: sampling {n_samples} molecules")
+        valid_names, valid_smiles = validate_molecules_sampler(sampler_data, config)
 
-        score_dict = score_molecules_json(sampler_file_path, 
-                                         config["target_sequences"], 
-                                         config["antitarget_sequences"], 
-                                         config)
-        print(score_dict)
-        if not score_dict:
-            bt.logging.warning("[Miner] Scoring failed or mismatched; continuing")
-            continue
+        if len(valid_names) == len(valid_smiles) and len(valid_names) > 0:
+            sampler_data = {"molecules": valid_names}
+            bt.logging.info(f"[Miner] After validation, {len(valid_names)} valid molecules remain out of {n_samples} sampled.")
+            with open(output_path, "w") as f:
+                json.dump(sampler_data, f, ensure_ascii=False, indent=2)
+            
+            with open(sampler_file_path, "w") as f:
+                json.dump(sampler_data, f, ensure_ascii=False, indent=2)
+            iteration += 1
+            bt.logging.info(f"[Miner] Iteration {iteration}: sampling {n_samples} molecules: Example")
+            bt.logging.info(f"[Miner] Iteration {iteration}: sampling {n_samples} molecules")
 
-        # Calculate final scores per molecule
-        batch_scores = calculate_final_scores(score_dict, sampler_data, config, save_all_scores)
+            score_dict = score_molecules_json(sampler_file_path, 
+                                            config["target_sequences"], 
+                                            config["antitarget_sequences"], 
+                                            config)
+            print(score_dict)
+            if not score_dict:
+                bt.logging.warning("[Miner] Scoring failed or mismatched; continuing")
+                continue
 
-        # Merge, deduplicate, sort and take top x
-        top_pool = pd.concat([top_pool, batch_scores])
-        top_pool = top_pool.drop_duplicates(subset=["InChIKey"], keep="first")
-        top_pool = top_pool.sort_values(by="score", ascending=False)
-        top_pool = top_pool.head(config["num_molecules"])
-        bt.logging.info(f"[Miner] Top pool now has {len(top_pool)} molecules after merging")
-        bt.logging.info(f"[Miner] Top molecules: {top_pool[['name', 'score']]}")
-        bt.logging.info(f"[Miner] Average top score: {top_pool['score'].mean()}")
-        # format to accepted format
-        top_entries = {"molecules": top_pool["name"].tolist()}
+            # Calculate final scores per molecule
+            batch_scores = calculate_final_scores(score_dict, sampler_data, config, save_all_scores)
 
-        # write to file
-        with open(output_path, "w") as f:
-            json.dump(top_entries, f, ensure_ascii=False, indent=2)
+            # Merge, deduplicate, sort and take top x
+            top_pool = pd.concat([top_pool, batch_scores])
+            top_pool = top_pool.drop_duplicates(subset=["InChIKey"], keep="first")
+            top_pool = top_pool.sort_values(by="score", ascending=False)
+            top_pool = top_pool.head(config["num_molecules"])
+            bt.logging.info(f"[Miner] Top pool now has {len(top_pool)} molecules after merging")
+            bt.logging.info(f"[Miner] Top molecules: {top_pool[['name', 'score']]}")
+            bt.logging.info(f"[Miner] Average top score: {top_pool['score'].mean()}")
+            # format to accepted format
+            top_entries = {"molecules": top_pool["name"].tolist()}
+
+            # write to file
+            with open(output_path, "w") as f:
+                json.dump(top_entries, f, ensure_ascii=False, indent=2)
         
 
 def calculate_final_scores(score_dict: dict, 
