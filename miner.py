@@ -10,8 +10,6 @@ os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':4096:8'
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(SCRIPT_DIR, "combinatorial_db", "molecules.sqlite")
 INPUT_PATH = os.path.join(SCRIPT_DIR, "input.json")
-OUT_PATH = os.path.join(SCRIPT_DIR, "output.json")
-
 MODEL_PATH = os.path.join(SCRIPT_DIR, 'PSICHIC/trained_weights/TREAT2/model.pt')
 
 def download_model_weights(model_path: str, i: int):
@@ -35,9 +33,12 @@ def get_config(input_file: os.path):
 
 def iterative_sampling_loop(
     db_path: str,
-    output_path: str,
-    config: dict
+    config: dict = None,
 ) -> None:
+    
+    parent_dir = os.path.dirname(SCRIPT_DIR)
+    output_path = os.path.join(parent_dir, "output", "result.json")
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
     n_samples = config["num_molecules"] * 5  # Sample 5x the number of molecules needed to ensure diversity
     rxn_id = int(config["allowed_reaction"].split(":")[-1])
@@ -97,7 +98,6 @@ def iterative_sampling_loop(
 def main(config: dict):
     iterative_sampling_loop(
         db_path=DB_PATH,
-        output_path= OUT_PATH,
         config=config,
     )
  
