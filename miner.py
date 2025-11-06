@@ -5,25 +5,20 @@ import sys
 import json
 import bittensor as bt
 import pandas as pd
-from rdkit import Chem
 from pathlib import Path
-import random
+import time
 
 PARENT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "."))
 sys.path.append(PARENT_DIR)
 # Ensure the repo's libs directory is on sys.path so the local `nova_ph2` package can be imported.
 REPO_ROOT = os.path.abspath(os.path.join(PARENT_DIR, "."))
-LIBS_DIR = os.path.join(REPO_ROOT, "libs")
-if LIBS_DIR not in sys.path:
-    sys.path.insert(0, LIBS_DIR)
 
-from validator.scoring import score_molecules_json
-from validator.validity import validate_molecules_sampler
-from combinatorial_db.reactions import get_smiles_from_reaction
+from validator.validity import validate_molecules, generate_inchikey
+from validator.scoring import target_scores_from_data, antitarget_scores_from_data
 
 
 DB_PATH = str(Path( "combinatorial_db/molecules.sqlite"))
-data = pd.read_csv('data.csv')
+
 def get_config(input_file: os.path = "input.json"):
     """
     Get config from input file
@@ -35,10 +30,8 @@ def get_config(input_file: os.path = "input.json"):
 
 def iterative_sampling_loop(
     db_path: str,
-    sampler_file_path: str,
     output_path: str,
-    config: dict,
-    save_all_scores: bool = False
+    config: dict
 ) -> None:
     """
     Infinite loop, runs until orchestrator kills it:
@@ -47,42 +40,47 @@ def iterative_sampling_loop(
       3) Merge with previous top x, deduplicate, sort, select top x
       4) Write top x to file (overwrite) each iteration
     """
-    n_samples = config["num_molecules"] * 5  # Sample 5x the number of molecules needed to ensure diversity
+    n_samples = config["num_molecules"] * 5  # Sample 50x the number of molecules needed to ensure diversity
+    in_data = pd.read_csv('data.csv')
 
     top_pool = pd.DataFrame(columns=["name", "smiles", "InChIKey", "score"])
 
     iteration = 0
     while True:
-        random.seed(iteration + 42)
-        sampler_data = {"molecules": random.sample(data['product_name'].tolist(), n_samples)}
-        valid_names, valid_smiles = validate_molecules_sampler(sampler_data, config)
+        sampler_data = in_data.sample(n_samples, random_state=iteration + 42)
+        data = validate_molecules(sampler_data, config)
 
-        if len(valid_names) == len(valid_smiles) and len(valid_names) > 0:
-            sampler_data = {"molecules": valid_names}
-            bt.logging.info(f"[Miner] After validation, {len(valid_names)} valid molecules remain out of {n_samples} sampled.")
-            with open(output_path, "w") as f:
-                json.dump(sampler_data, f, ensure_ascii=False, indent=2)
-            
-            with open(sampler_file_path, "w") as f:
-                json.dump(sampler_data, f, ensure_ascii=False, indent=2)
+        bt.logging.info(f"[Miner] After validation, {len(data)} valid molecules remain out of {n_samples} sampled.")
+        if len(data) == 0:
+            bt.logging.warning(f"[Miner] No valid molecules found after validation. Skipping iteration {iteration}.")
             iteration += 1
-            bt.logging.info(f"[Miner] Iteration {iteration}: sampling {n_samples} molecules: Example")
-            bt.logging.info(f"[Miner] Iteration {iteration}: sampling {n_samples} molecules")
+            continue
+        else:
+            data = data.reset_index(drop=True)
+            data['Target'] = target_scores_from_data(data['smiles'], config['target_sequences'])
+            print(data)
+            data = data.sort_values(by='Target', ascending=False)
+            max_value = data['Target'].max()
+            if max_value > 7.0:
+                data = data[data['Target']>7.0]
+                bt.logging.info(f"[Miner] After target scoring, {len(data)} molecules remain with Target > 7.0.")
 
-            score_dict = score_molecules_json(sampler_file_path, 
-                                            config["target_sequences"], 
-                                            config["antitarget_sequences"], 
-                                            config)
-            print(score_dict)
-            if not score_dict:
-                bt.logging.warning("[Miner] Scoring failed or mismatched; continuing")
+            else:
+                data = data.iloc[:10]
+                bt.logging.info(f"[Miner] After target scoring, {len(data)} molecules selected.")
+
+            if data.empty:
+                bt.logging.warning(f"[Miner] No molecules passed the target score threshold. Skipping iteration {iteration}.")
+                iteration += 1
                 continue
 
-            # Calculate final scores per molecule
-            batch_scores = calculate_final_scores(score_dict, sampler_data, config, save_all_scores)
-
+            data['Anti'] = antitarget_scores_from_data(data['smiles'], config['antitarget_sequences'])
+            data['score'] = data['Target'] - (config['antitarget_weight'] * data['Anti'])
+            data = data[data['score']>0]
+            data['InChIKey'] = data['smiles'].apply(lambda x: generate_inchikey(x))
+            total_data = data[["name", "smiles", "InChIKey", "score"]]
             # Merge, deduplicate, sort and take top x
-            top_pool = pd.concat([top_pool, batch_scores])
+            top_pool = pd.concat([top_pool, total_data])
             top_pool = top_pool.drop_duplicates(subset=["InChIKey"], keep="first")
             top_pool = top_pool.sort_values(by="score", ascending=False)
             top_pool = top_pool.head(config["num_molecules"])
@@ -95,76 +93,13 @@ def iterative_sampling_loop(
             # write to file
             with open(output_path, "w") as f:
                 json.dump(top_entries, f, ensure_ascii=False, indent=2)
-        
-
-def calculate_final_scores(score_dict: dict, 
-        sampler_data: dict, 
-        config: dict, 
-        save_all_scores: bool = True,
-        current_epoch: int = 0) -> pd.DataFrame:
-    """
-    Calculate final scores per molecule
-    """
-
-    names = sampler_data["molecules"]
-    smiles = [get_smiles_from_reaction(name) for name in names]
-
-    # Calculate InChIKey for each molecule to deduplicate molecules after merging
-    inchikey_list = []
-    
-    for s in smiles:
-        try:
-            inchikey_list.append(Chem.MolToInchiKey(Chem.MolFromSmiles(s)))
-        except Exception as e:
-            bt.logging.error(f"Error calculating InChIKey for {s}: {e}")
-            inchikey_list.append(None)
-
-    # Calculate final scores for each molecule
-    targets = score_dict[0]['target_scores']
-    antitargets = score_dict[0]['antitarget_scores']
-    final_scores = []
-    for mol_idx in range(len(names)):
-        # target average
-        target_scores_for_mol = [target_list[mol_idx] for target_list in targets]
-        avg_target = sum(target_scores_for_mol) / len(target_scores_for_mol)
-
-        # antitarget average
-        antitarget_scores_for_mol = [antitarget_list[mol_idx] for antitarget_list in antitargets]
-        avg_antitarget = sum(antitarget_scores_for_mol) / len(antitarget_scores_for_mol)
-
-        # final score
-        score = avg_target - (config["antitarget_weight"] * avg_antitarget)
-        final_scores.append(score)
-
-    # Store final scores in dataframe
-    batch_scores = pd.DataFrame({
-        "name": names,
-        "smiles": smiles,
-        "InChIKey": inchikey_list,
-        "score": final_scores
-    })
-
-    if save_all_scores:
-        all_scores = {"scored_molecules": [(mol["name"], mol["score"]) for mol in batch_scores.to_dict(orient="records")]}
-        
-        if os.path.exists(f"all_scores_{current_epoch}.json"):
-            with open(f"all_scores_{current_epoch}.json", "r") as f:
-                all_previous_scores = json.load(f)
-            
-            all_scores["scored_molecules"] = all_previous_scores["scored_molecules"] + all_scores["scored_molecules"]
-
-        with open( f"all_scores_{current_epoch}.json", "w") as f:
-            json.dump(all_scores, f, ensure_ascii=False, indent=2)
-
-    return batch_scores
+            iteration += 1
 
 def main(config: dict):
     iterative_sampling_loop(
         db_path=DB_PATH,
-        sampler_file_path= "sampler_file.json",
         output_path= "output.json",
         config=config,
-        save_all_scores=True,
     )
  
 

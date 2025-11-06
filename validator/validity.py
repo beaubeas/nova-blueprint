@@ -1,152 +1,94 @@
 import bittensor as bt
 from rdkit import Chem
 from rdkit.Chem import Descriptors
-
+import pandas as pd
 from utils.molecules import (
-    get_smiles, 
     get_heavy_atom_count, 
     compute_maccs_entropy,
     find_chemically_identical
 )
+from combinatorial_db.reactions import get_smiles_from_reaction
 
-def validate_molecules_and_calculate_entropy(
-    uid_to_data: dict[int, dict[str, list]],
-    score_dict: dict[int, dict[str, list[list[float]]]],
-    config: dict,
-    allowed_reaction: str = None
-) -> dict[int, dict[str, list[str]]]:
-    """
-    Validates molecules for all UIDs and calculates their MACCS entropy.
-    Updates the score_dict with entropy values.
+# def validate_molecules_and_calculate_entropy(
+#     uid_to_data: dict[int, dict[str, list]],
+#     score_dict: dict[int, dict[str, list[list[float]]]],
+#     config: dict,
+#     allowed_reaction: str = None
+# ) -> dict[int, dict[str, list[str]]]:
+#     """
+#     Validates molecules for all UIDs and calculates their MACCS entropy.
+#     Updates the score_dict with entropy values.
     
-    Args:
-        uid_to_data: Dictionary mapping UIDs to their data including molecules
-        score_dict: Dictionary to store scores and entropy
-        config: Configuration dictionary containing validation parameters
-        allowed_reaction: Optional allowed reaction filter for this epoch
+#     Args:
+#         uid_to_data: Dictionary mapping UIDs to their data including molecules
+#         score_dict: Dictionary to store scores and entropy
+#         config: Configuration dictionary containing validation parameters
+#         allowed_reaction: Optional allowed reaction filter for this epoch
         
-    Returns:
-        Dictionary mapping UIDs to their list of valid SMILES strings
-    """
-    valid_molecules_by_uid = {}
-    
-    for uid, data in uid_to_data.items():
-        valid_smiles = []
-        valid_names = []
-        
-        # Check for duplicate molecules in submission
-        if len(data["molecules"]) != len(set(data["molecules"])):
-            bt.logging.error(f"UID={uid} submission contains duplicate molecules")
-            score_dict[uid]["entropy"] = None
-            score_dict[uid]["block_submitted"] = None
-            continue
+#     Returns:
+#         Dictionary mapping UIDs to their list of valid SMILES strings
+#     """
+#     valid_molecules_by_uid = {}
+
+#     try:
+#         identical_molecules = find_chemically_identical(valid_smiles)
+#         if identical_molecules:
+#             duplicate_names = []
+#             for inchikey, indices in identical_molecules.items():
+#                 molecule_names = [valid_names[idx] for idx in indices]
+#                 duplicate_names.append(f"{', '.join(molecule_names)} (same InChIKey: {inchikey})")
             
-        for molecule in data["molecules"]:
-            try:
-                smiles = get_smiles(molecule)
-                if smiles:
-                    try:
-                        mol = Chem.MolFromSmiles(smiles)
-                        num_rotatable_bonds = Descriptors.NumRotatableBonds(mol)
-                        if num_rotatable_bonds >= config['min_rotatable_bonds'] and num_rotatable_bonds <= config['max_rotatable_bonds']:
-                            valid_smiles.append(smiles)
-                            valid_names.append(molecule)
-                    except Exception as e:
-                        continue
-            except Exception as e:
-                continue
-            
-        # Check for chemically identical molecules
-        if valid_smiles:
-            try:
-                identical_molecules = find_chemically_identical(valid_smiles)
-                if identical_molecules:
-                    duplicate_names = []
-                    for inchikey, indices in identical_molecules.items():
-                        molecule_names = [valid_names[idx] for idx in indices]
-                        duplicate_names.append(f"{', '.join(molecule_names)} (same InChIKey: {inchikey})")
-                    
-                    bt.logging.warning(f"UID={uid} submission contains chemically identical molecules: {'; '.join(duplicate_names)}")
-                    score_dict[uid]["entropy"] = None
-                    score_dict[uid]["block_submitted"] = None
-                    continue 
-            except Exception as e:
-                bt.logging.warning(f"Error checking for chemically identical molecules for UID={uid}: {e}")
-
-        
-        # Calculate entropy if we have valid molecules, or skip if below threshold
-        if valid_smiles:
-            try:
-                entropy = compute_maccs_entropy(valid_smiles)
-                if entropy > config['entropy_min_threshold']:
-                    score_dict[uid]["entropy"] = entropy
-                    valid_molecules_by_uid[uid] = {"smiles": valid_smiles, "names": valid_names}
-                    if uid != 0:
-                        score_dict[uid]["block_submitted"] = data["block_submitted"]     
-                    else:
-                        score_dict[uid]["block_submitted"] = None
-                else:
-                    bt.logging.warning(f"UID={uid} submission has entropy below threshold: {entropy}")
-                    score_dict[uid]["entropy"] = None
-                    score_dict[uid]["block_submitted"] = None
-                    valid_smiles = []
-                    valid_names = []
-
-            except Exception as e:
-                bt.logging.error(f"Error calculating entropy for UID={uid}: {e}")
-                score_dict[uid]["entropy"] = None
-                score_dict[uid]["block_submitted"] = None
-                valid_smiles = []
-                valid_names = []
-        else:
-            score_dict[uid]["entropy"] = None
-            score_dict[uid]["block_submitted"] = None
-            
-    return valid_molecules_by_uid
-
-
-def validate_molecules_sampler(
-    sampler_data: dict[int, dict[str, list]],
-    config: dict,
-) -> tuple[list[str], list[str]]:
-    """
-    Validates molecules for random sampler (uid=0).    
-    Doesn't interrupt the process if a molecule is invalid, removes it from the list instead. 
-    Doesn't check allowed reactions (handled in random_sampler.py)
-    
-    Args:
-        sampler_data: Dictionary in the format of {"molecules": list[str]}
-        config: Configuration dictionary containing validation parameters
-        
-    Returns:
-        valid names and smiles (list[str], list[str])
-    """
-    
-    molecules = sampler_data["molecules"]
-
-    valid_smiles = []
-    valid_names = []
+#             bt.logging.warning(f"UID={uid} submission contains chemically identical molecules: {'; '.join(duplicate_names)}")
+#             score_dict["entropy"] = None
+#             score_dict["block_submitted"] = None
                 
-    for molecule in molecules:
-        try:
-            if molecule is None:
-                continue
-            
-            smiles = get_smiles(molecule)
-            if not smiles:
-                continue
+#     except Exception as e:
+#         bt.logging.warning(f"Error checking for chemically identical molecules for UID={uid}: {e}")
 
-            try:    
-                mol = Chem.MolFromSmiles(smiles)
-                num_rotatable_bonds = Descriptors.NumRotatableBonds(mol)
-                if num_rotatable_bonds < config['min_rotatable_bonds'] or num_rotatable_bonds > config['max_rotatable_bonds']:
-                    continue
-            except Exception as e:
-                continue
     
-            valid_smiles.append(smiles)
-            valid_names.append(molecule)
-        except Exception as e:
-            continue
-        
-    return valid_names, valid_smiles
+#     # Calculate entropy if we have valid molecules, or skip if below threshold
+#     try:
+#         entropy = compute_maccs_entropy(valid_smiles)
+#         if entropy > config['entropy_min_threshold']:
+#             score_dict["entropy"] = entropy
+#             valid_molecules_by_uid = {"smiles": valid_smiles, "names": valid_names}
+#         else:
+#             bt.logging.warning(f"UID={uid} submission has entropy below threshold: {entropy}")
+#             score_dict["entropy"] = None
+#             score_dict["block_submitted"] = None
+#             valid_smiles = []
+#             valid_names = []
+
+#     except Exception as e:
+#         bt.logging.error(f"Error calculating entropy for UID={uid}: {e}")
+#         score_dict["entropy"] = None
+#         score_dict["block_submitted"] = None
+#         valid_smiles = []
+#         valid_names = []
+
+            
+#     return valid_molecules_by_uid
+
+def num_rotatable_bonds(smiles):
+    try:
+        mol = Chem.MolFromSmiles(smiles)
+        num = Descriptors.NumRotatableBonds(mol)
+        return num
+    except Exception as e:
+        return 0
+
+def validate_molecules( data: pd.DataFrame, config: dict ) -> pd.DataFrame:
+    data['smiles'] = data["name"].apply(lambda x: get_smiles_from_reaction(x))
+    data['bonds'] = data['smiles'].apply(lambda x: num_rotatable_bonds(x))
+    data = data[data['bonds'] >= config['min_rotatable_bonds']]
+    data = data[data['bonds'] <= config['max_rotatable_bonds']]
+    return data
+
+def generate_inchikey(smiles: str) -> str:
+    try:
+        mol = Chem.MolFromSmiles(smiles)
+        inchikey = Chem.MolToInchiKey(mol)
+        return inchikey
+    except Exception as e:
+        bt.logging.error(f"Error generating InChIKey for SMILES {smiles}: {e}")
+        return ""
