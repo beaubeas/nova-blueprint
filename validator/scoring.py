@@ -19,10 +19,9 @@ def target_scores_from_data(data: pd.Series, target_sequence: List[str]) -> pd.S
     try:
         target_sequence = target_sequence[0]
         psichic_model.initialize_model(target_sequence)
-        bt.logging.info(f"Protein {target_sequence} started")
+        bt.logging.info(f"* Target Protein *")
         scores = psichic_model.score_molecules(data.tolist())
         scores.rename(columns={'predicted_binding_affinity': "target"}, inplace=True)
-        bt.logging.info(f"Protein {target_sequence} processed")
         return scores["target"]
     except Exception as e:
         bt.logging.error(f"Error scoring target {target_sequence}: {e}")
@@ -38,10 +37,9 @@ def antitarget_scores_from_data(data: pd.Series, antitarget_sequence: List[str])
     try:
         for i in range(len(antitarget_sequence)):
             psichic_model.initialize_model(antitarget_sequence[i])
-            bt.logging.info(f"Protein {antitarget_sequence[i]} started")
+            bt.logging.info(f"* Antitarget Protein ({i + 1}) *")
             scores = psichic_model.score_molecules(data.tolist())
             scores.rename(columns={'predicted_binding_affinity': f"anti_{i}"}, inplace=True)
-            bt.logging.info(f"Protein {antitarget_sequence[i]} processed")
             antitarget_scores.append(scores[f"anti_{i}"])
         data['Anti'] = pd.DataFrame(antitarget_scores).mean(axis=0).values
         return data['Anti']
