@@ -2,16 +2,31 @@ import os
 import json
 import bittensor as bt
 import pandas as pd
-from pathlib import Path
 from validator.validity import generate_valid_random_molecules_batch
 from validator.scoring import target_scores_from_data, antitarget_scores_from_data
+import time
 
 os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':4096:8'
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(SCRIPT_DIR, "combinatorial_db", "molecules.sqlite")
-
 INPUT_PATH = os.path.join(SCRIPT_DIR, "input.json")
 OUT_PATH = os.path.join(SCRIPT_DIR, "output.json")
+
+MODEL_PATH = os.path.join(SCRIPT_DIR, 'PSICHIC/trained_weights/TREAT2/model.pt')
+
+def download_model_weights(model_path: str, i: int):
+    try:
+        os.system(f"wget -O {model_path} https://huggingface.co/Metanova/TREAT-2/resolve/main/model.pt")
+        bt.logging.info('Downloaded Model Weights Successfully.')
+    except Exception as e:
+        if  i==5:
+            bt.logging.error(f"Failed to download model weights after {i} attempts.")
+            return
+        bt.logging.error(f"Error downloading model weights, Retrying... Attempt {i+1}/5:")
+        time.sleep(2)
+        download_model_weights(model_path, i + 1)
+    
+
 def get_config(input_file: os.path):
     with open(input_file, "r") as f:
         d = json.load(f)
@@ -79,4 +94,8 @@ def main(config: dict):
 
 if __name__ == "__main__":
     config = get_config(INPUT_PATH)
+    if not os.path.exists(MODEL_PATH):
+        download_model_weights(MODEL_PATH, 0)
+    else:
+        bt.logging.info('Model Weights already exist.') 
     main(config)

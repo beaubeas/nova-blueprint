@@ -8,3 +8,4 @@ data/results/
 *.log
 __pycache__
 .vscode/
+PSICHIC/trained_weights/TREAT2/model.pt
