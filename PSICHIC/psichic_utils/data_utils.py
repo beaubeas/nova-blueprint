@@ -200,7 +200,7 @@ def ligand_degree_from_dict(ligand_dict):
     mol_max_degree = -1 
     clique_max_degree = -1 
     
-    for k, v in tqdm(ligand_dict.items()):
+    for k, v in ligand_dict.items():
          # mol
         mol_x = v['atom_feature']
         adj = v['bond_feature']
@@ -216,7 +216,7 @@ def ligand_degree_from_dict(ligand_dict):
     mol_deg = torch.zeros(mol_max_degree + 1, dtype=torch.long)
     clique_deg = torch.zeros(clique_max_degree + 1, dtype=torch.long)
 
-    for k, v in tqdm(ligand_dict.items()):
+    for k, v in ligand_dict.items():
         # mol
         mol_x = v['atom_feature']
         adj = v['bond_feature']

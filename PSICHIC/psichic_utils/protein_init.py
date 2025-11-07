@@ -1,13 +1,4 @@
 import numpy as np
-import pandas as pd
-import sys
-
-# Check if the code is running in a Jupyter notebook
-if 'ipykernel' in sys.modules:
-    from tqdm.notebook import tqdm
-else:
-    from tqdm import tqdm
-
 import torch
 import esm
 from torch_geometric.utils import degree, add_self_loops, subgraph, to_undirected, remove_self_loops, coalesce
@@ -23,7 +14,7 @@ def protein_init(seqs):
         model = model.cuda()
     batch_converter = alphabet.get_batch_converter()
 
-    for seq in tqdm(seqs):
+    for seq in seqs:
         seq_feat = seq_feature(seq)
         token_repr, contact_map_proba, logits = esm_extract(model, batch_converter, seq, layer=33, approach='last',dim=1280)
         

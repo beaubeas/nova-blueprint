@@ -12,13 +12,6 @@ fdefName = os.path.join(RDConfig.RDDataDir,'BaseFeatures.fdef')
 factory = ChemicalFeatures.BuildFeatureFactory(fdefName)
 import sys
 
-# Check if the code is running in a Jupyter notebook
-if 'ipykernel' in sys.modules:
-    from tqdm.notebook import tqdm
-else:
-    from tqdm import tqdm
-
-
 
 
 def one_of_k_encoding(x, allowable_set):
@@ -478,7 +471,7 @@ def smiles2graph(m_str):
 
 def ligand_init(smiles_list):
     ligand_dict = {}
-    for smiles in tqdm(smiles_list):
+    for smiles in smiles_list:
         graph = smiles2graph(smiles)
         if graph is None:
             print(f"Error: {smiles} is an invalid SMILES string")
