@@ -5,7 +5,7 @@ import bittensor as bt
 import pandas as pd
 from typing import List
 from PSICHIC.wrapper import PsichicWrapper
-from validator.validity import generate_valid_random_molecules_batch
+from utils.molecules import generate_valid_random_molecules_batch
 
 os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':4096:8'
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -77,21 +77,17 @@ def iterative_sampling_loop(
     
     parent_dir = os.path.dirname(SCRIPT_DIR)
     output_path = os.path.join(parent_dir, "output", "result.json")
+    print(output_path)
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
     n_samples = config["num_molecules"] * 5  # Sample 5x the number of molecules needed to ensure diversity
     rxn_id = int(config["allowed_reaction"].split(":")[-1])
     top_pool = pd.DataFrame(columns=["name", "smiles", "InChIKey", "score"])
-    specific_pool = []
     iteration = 0
     while True:
-        if rxn_id == 5:
-            specific_pool = [193892,190177,189908,189662,189449,194399,193228,189448,196793,193506]
-        if rxn_id == 4:
-            specific_pool = [221193,218682,219061,219046,218998,218681,213053,212649,212650,215170]
 
         data = generate_valid_random_molecules_batch(
-            rxn_id, n_samples, db_path, config, batch_size=n_samples, seed=iteration + 42, specific_pool=specific_pool
+            rxn_id, n_samples, db_path, config, batch_size=n_samples, seed=iteration + 42
         )
 
         data = data.reset_index(drop=True)
@@ -120,11 +116,6 @@ def iterative_sampling_loop(
         top_pool = top_pool.drop_duplicates(subset=["InChIKey"], keep="first")
         top_pool = top_pool.sort_values(by="score", ascending=False)
         top_pool = top_pool.head(config["num_molecules"])
-        if rxn_id not in [4,5]:
-            top_data = list(set([int(i.split(':')[2]) for i in  top_pool.head(5)['name'].tolist()]))
-            bt.logging.info(f"[Miner] Top molecule IDs this iteration: {top_data}")
-            specific_pool = list(set(top_data + specific_pool) -set(specific_pool))
-            bt.logging.info(f"[Miner] Specific pool now has {specific_pool} molecules.")
         bt.logging.info(f"[Miner] Top pool now has {len(top_pool)} molecules after merging, Average top score: {round(top_pool['score'].mean(), 4)}")
         # format to accepted format
         top_entries = {"molecules": top_pool["name"].tolist()}
