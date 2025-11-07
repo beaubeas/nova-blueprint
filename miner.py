@@ -1,16 +1,55 @@
 import os
 import json
+import time
 import bittensor as bt
 import pandas as pd
+from typing import List
+from PSICHIC.wrapper import PsichicWrapper
 from validator.validity import generate_valid_random_molecules_batch
-from validator.scoring import target_scores_from_data, antitarget_scores_from_data
-import time
 
 os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':4096:8'
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(SCRIPT_DIR, "combinatorial_db", "molecules.sqlite")
 INPUT_PATH = os.path.join(SCRIPT_DIR, "input.json")
 MODEL_PATH = os.path.join(SCRIPT_DIR, 'PSICHIC/trained_weights/TREAT2/model.pt')
+
+psichic_model = PsichicWrapper()
+
+def target_scores_from_data(data: pd.Series, target_sequence: List[str]) -> pd.Series:
+    global psichic_model
+
+    try:
+        target_sequence = target_sequence[0]
+        psichic_model.initialize_model()
+        psichic_model.initialize_protein(target_sequence)
+        psichic_model.initialize_smiles(data.tolist())
+        bt.logging.info(f"* Target Protein *")
+        scores = psichic_model.score_molecules()
+        scores.rename(columns={'predicted_binding_affinity': "target"}, inplace=True)
+        return scores["target"]
+    except Exception as e:
+        bt.logging.error(f"Error scoring target {target_sequence}: {e}")
+        return pd.Series(dtype=float)
+
+def antitarget_scores_from_data(data: pd.Series, antitarget_sequence: List[str]) -> pd.Series:
+    global psichic_model
+    antitarget_scores = []
+    psichic_model.smiles_list = data.to_list()
+    psichic_model.smiles_dict = {k: v for k, v in psichic_model.smiles_dict.items() if k in data.tolist()}
+    try:
+        for i in range(len(antitarget_sequence)):
+            psichic_model.initialize_model()
+            psichic_model.initialize_protein(antitarget_sequence[i])
+            bt.logging.info(f"* Antitarget Protein ({i + 1}) *")
+            scores = psichic_model.score_molecules()
+            scores.rename(columns={'predicted_binding_affinity': f"anti_{i}"}, inplace=True)
+            antitarget_scores.append(scores[f"anti_{i}"])
+        data['Anti'] = pd.DataFrame(antitarget_scores).mean(axis=0).values
+        return data['Anti']
+        
+    except Exception as e:
+        bt.logging.error(f"Error scoring antitarget {antitarget_sequence[i]}: {e}")
+        return pd.Series(dtype=float)
 
 def download_model_weights(model_path: str, i: int):
     try:
@@ -64,7 +103,7 @@ def iterative_sampling_loop(
             bt.logging.info(f"[Miner] After target scoring, {len(data)} molecules remain with Target > 6.5.")
 
         else:
-            data = data.iloc[:20]
+            data = data.iloc[:50]
             bt.logging.info(f"[Miner] After target scoring, {len(data)} molecules selected.")
 
         if data.empty:
@@ -82,11 +121,11 @@ def iterative_sampling_loop(
         top_pool = top_pool.sort_values(by="score", ascending=False)
         top_pool = top_pool.head(config["num_molecules"])
         if rxn_id not in [4,5]:
-            top_data = [int(i.split(':')[2]) for i in  top_pool.head(3)['name'].tolist()]
-            bt.logging.info(f"[Miner] Top 3 molecule IDs this iteration: {top_data}")
+            top_data = list(set([int(i.split(':')[2]) for i in  top_pool.head(5)['name'].tolist()]))
+            bt.logging.info(f"[Miner] Top molecule IDs this iteration: {top_data}")
             specific_pool = list(set(top_data + specific_pool) -set(specific_pool))
-            bt.logging.info(f"[Miner] Specific pool now has {specific_pool} molecules after merging.")
-        bt.logging.info(f"[Miner] Top pool now has {len(top_pool)} molecules after merging, Average top score: {top_pool['score'].mean()}")
+            bt.logging.info(f"[Miner] Specific pool now has {specific_pool} molecules.")
+        bt.logging.info(f"[Miner] Top pool now has {len(top_pool)} molecules after merging, Average top score: {round(top_pool['score'].mean(), 4)}")
         # format to accepted format
         top_entries = {"molecules": top_pool["name"].tolist()}
 

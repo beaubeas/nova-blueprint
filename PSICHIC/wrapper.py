@@ -23,10 +23,7 @@ class PsichicWrapper:
             self.model_config = json.load(f)
             
     def load_model(self):
-        degree_dict = torch.load(os.path.join(self.runtime_config.MODEL_PATH,
-                                              'degree.pt'), 
-                                 weights_only=True
-                                 )
+        degree_dict = torch.load(os.path.join(self.runtime_config.MODEL_PATH, 'degree.pt'), weights_only=True)
         param_dict = os.path.join(self.runtime_config.MODEL_PATH, 'model.pt')
         mol_deg, prot_deg = degree_dict['ligand_deg'], degree_dict['protein_deg']
         
@@ -51,61 +48,34 @@ class PsichicWrapper:
                          multiclassification_head=self.model_config['tasks']['mclassification_task'],
                          device=self.device).to(self.device)
         self.model.reset_parameters()    
-        self.model.load_state_dict(torch.load(param_dict, 
-                                              map_location=self.device, 
-                                              weights_only=True
-                                              )
-                                   )
+        self.model.load_state_dict(torch.load(param_dict, map_location=self.device, weights_only=True))
         self.model.eval()
         
+    def initialize_model(self):
+        torch.cuda.empty_cache()
+        self.load_model()
+
     def initialize_protein(self, protein_seq:str) -> dict:
         allowed_chars = set(['A', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'K', 'L', 'M', 'N', 'P', 'Q', 'R', 'S', 'T', 'V', 'W', 'Y', 'X'])
         sanitized_protein_seq = ''.join([aa if aa in allowed_chars else 'X' for aa in protein_seq])
         self.protein_seq = [sanitized_protein_seq]
+        self.protein_dict = protein_init(self.protein_seq)
 
-        protein_dict = protein_init(self.protein_seq)
-        return protein_dict
-    
     def initialize_smiles(self, smiles_list:list) -> dict:
         self.smiles_list = smiles_list
-        smiles_dict = ligand_init(smiles_list)
-        return smiles_dict
+        self.smiles_dict = ligand_init(smiles_list)
     
     def create_screen_loader(self, protein_dict, smiles_dict):
         self.screen_df = pd.DataFrame({'Protein': [k for k in self.protein_seq for _ in self.smiles_list],
-                                       'Ligand': [l for l in self.smiles_list for _ in self.protein_seq],
-                                       })
+                                       'Ligand': [l for l in self.smiles_list for _ in self.protein_seq]})
         
-        dataset = ProteinMoleculeDataset(self.screen_df, 
-                                         smiles_dict, 
-                                         protein_dict, 
-                                         device=self.device
-                                         )
-        
-        self.screen_loader = DataLoader(dataset,
-                                        batch_size=self.runtime_config.BATCH_SIZE,
-                                        shuffle=False,
-                                        follow_batch=['mol_x', 'clique_x', 'prot_node_aa']
-                                        )
-        
-    def initialize_model(self, protein_seq:str):
-        torch.cuda.empty_cache()
-        self.load_model()
-        self.protein_dict = self.initialize_protein(protein_seq)
-        
-    def score_molecules(self, smiles_list:list) -> pd.DataFrame:
-        self.smiles_dict = self.initialize_smiles(smiles_list)
+        dataset = ProteinMoleculeDataset(self.screen_df, smiles_dict, protein_dict, device=self.device)
+        self.screen_loader = DataLoader(dataset, batch_size=self.runtime_config.BATCH_SIZE, shuffle=False, follow_batch=['mol_x', 'clique_x', 'prot_node_aa'])
+    
+    def score_molecules(self) -> pd.DataFrame:
         torch.cuda.empty_cache()
         self.create_screen_loader(self.protein_dict, self.smiles_dict)
-        self.screen_df = virtual_screening(self.screen_df, 
-                                           self.model, 
-                                           self.screen_loader,
-                                           os.getcwd(),
-                                           save_interpret=False,
-                                           ligand_dict=self.smiles_dict, 
-                                           device=self.device,
-                                           save_cluster=False,
-                                           )
+        self.screen_df = virtual_screening(self.screen_df, self.model, self.screen_loader, os.getcwd(), save_interpret=False, ligand_dict=self.smiles_dict, device=self.device, save_cluster=False)
         return self.screen_df
     
     def clear_gpu_memory(self):
@@ -129,4 +99,3 @@ class PsichicWrapper:
             del self.screen_df
             self.screen_df = None
         self.clear_gpu_memory()
-        
