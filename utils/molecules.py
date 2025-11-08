@@ -128,7 +128,7 @@ def validate_molecules( data: pd.DataFrame, config: dict ) -> pd.DataFrame:
 
 def get_molecules_by_role(role_mask: int, db_path: str) -> List[Tuple[int, str, int]]:
     try:
-        conn = sqlite3.connect(db_path)
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro&immutable=1", uri=True)
         cursor = conn.cursor()
         cursor.execute(
             "SELECT mol_id, smiles, role_mask FROM molecules WHERE (role_mask & ?) = ?", 
