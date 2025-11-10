@@ -119,6 +119,7 @@ def main(config: dict):
         data = data.reset_index(drop=True)
         data['Target'] = target_scores_from_data(data['smiles'], config['target_sequences'])
         data = data.sort_values(by='Target', ascending=False)
+        data = data.iloc[:350]
         bt.logging.info(f"[Miner] After target scoring, {len(data)} molecules selected.")
         data['Anti'] = antitarget_scores_from_data(data['smiles'], config['antitarget_sequences'])
         data['score'] = data['Target'] - (config['antitarget_weight'] * data['Anti'])
