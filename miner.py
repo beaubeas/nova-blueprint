@@ -64,6 +64,7 @@ def target_scores_from_data(data: pd.Series, target_sequence: List[str]):
 def antitarget_scores_from_data(data: pd.Series, antitarget_sequence: List[str]):
     global psichic_model
     try:
+        psichic_model.smiles_list = data.to_list()
         psichic_model.smiles_dict = {k: v for k, v in psichic_model.smiles_dict.items() if k in psichic_model.smiles_list}
         antitarget_scores = []
         for i, seq in enumerate(antitarget_sequence):
