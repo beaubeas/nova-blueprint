@@ -16,8 +16,7 @@ INPUT_PATH = os.path.join(SCRIPT_DIR, "input.json")
 MODEL_PATH = os.path.join(SCRIPT_DIR, 'PSICHIC/trained_weights/TREAT2/model.pt')
 OUTPUT_DIR = os.environ.get("OUTPUT_DIR", "/output")
 
-psichic_model = PsichicWrapper()
-psichic_model.initialize_model()
+
 
 def download_model_weights(model_path: str, i: int):
     try:
@@ -30,6 +29,14 @@ def download_model_weights(model_path: str, i: int):
         bt.logging.error(f"Error downloading model weights, Retrying... Attempt {i+1}/5:")
         time.sleep(2)
         download_model_weights(model_path, i + 1)
+
+try:
+    download_model_weights(MODEL_PATH, 0)
+except Exception:
+    pass
+
+psichic_model = PsichicWrapper()
+psichic_model.initialize_model()
 
 def get_config(input_file: str):
     with open(input_file, "r") as f:
@@ -142,5 +149,6 @@ def main(config: dict):
             json.dump(top_entries, f, ensure_ascii=False, indent=2)
 
 if __name__ == "__main__":
+    
     config = get_config(INPUT_PATH)
     main(config)
