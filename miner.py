@@ -145,6 +145,7 @@ def main(config: dict):
         bt.logging.info(f"[Miner] Iteration finished within {round(time.time() - start_time,2)}")
         # format to accepted format
         top_entries = {"molecules": top_pool["name"].tolist()}
+        os.makedirs(OUTPUT_DIR, exist_ok=True)
         with open(os.path.join(OUTPUT_DIR, "result.json"), "w") as f:
             json.dump(top_entries, f, ensure_ascii=False, indent=2)
 
