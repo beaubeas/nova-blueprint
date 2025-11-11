@@ -30,10 +30,9 @@ def download_model_weights(model_path: str, i: int):
         time.sleep(2)
         download_model_weights(model_path, i + 1)
 
-try:
-    download_model_weights(MODEL_PATH, 0)
-except Exception:
-    pass
+
+if not os.path.exists(MODEL_PATH):
+    download_model_weights(MODEL_PATH)
 
 psichic_model = PsichicWrapper()
 psichic_model.initialize_model()
@@ -106,7 +105,7 @@ def main(config: dict):
             continue
 
         try:
-            filterd_data = data[~data['smiles'].isin(seen_inchikeys)]
+            filterd_data = data[~data['InChIKey'].isin(seen_inchikeys)]
 
             if len(filterd_data) < len(data):
                 bt.logging.warning(f"{len(data) - len(filterd_data)} molecules were previously seen; continuing with unseen only")
@@ -124,14 +123,16 @@ def main(config: dict):
         except Exception as e:
             bt.logging.warning(f"[Miner] Pre-score deduplication failed; proceeding unfiltered: {e}")
 
-        bt.logging.info(f"[Miner] Generation finished within {round(time.time() - start_time,2)}")
         data = data.reset_index(drop=True)
         data['Target'] = target_scores_from_data(data['smiles'], config['target_sequences'])
         data = data.sort_values(by='Target', ascending=False)
-        if data['Target'].max() - data['Target'].min()>0.7 and data['Target'].max() - data['Target'].min()<1.5:
-            data = data.iloc[:350]
-        elif data['Target'].max() - data['Target'].min()>1.5:
-            data = data.iloc[:250]
+        
+        if data['Target'].max() - data['Target'].min()<1:
+            data = data.iloc[:200]
+        elif data['Target'].max() - data['Target'].min()<2:
+            data = data.iloc[:300]
+        else:
+            data = data.iloc[:400]
 
         bt.logging.info(f"[Miner] After target scoring, {len(data)} molecules selected.")
         data['Anti'] = antitarget_scores_from_data(data['smiles'], config['antitarget_sequences'])
