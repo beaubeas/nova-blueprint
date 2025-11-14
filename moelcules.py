@@ -12,7 +12,7 @@ load_dotenv(override=True)
 warnings.filterwarnings("ignore", category=pd.errors.SettingWithCopyWarning)
 from nova_ph2.combinatorial_db.reactions import get_smiles_from_reaction, get_reaction_info
 
-def get_heavy_atom_count(smiles: str) -> int:
+def get_heavy_atom_counts(smiles: str) -> int:
     """
     Calculate the number of heavy atoms in a molecule from its SMILES string.
     """
@@ -48,7 +48,7 @@ class _MoleculeDescriptor:
             self.rotatable_bonds = 0
             self.inchikey = ""
         else:
-            self.heavy_atoms = get_heavy_atom_count(self.mol)
+            self.heavy_atoms = get_heavy_atom_counts(self.mol)
             self.rotatable_bonds = Descriptors.NumRotatableBonds(mol)
             self.inchikey = Chem.MolToInchiKey(mol)
 
