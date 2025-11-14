@@ -6,55 +6,36 @@ import pandas as pd
 import warnings
 import sqlite3
 import random
-from functools import lru_cache
-from typing import List, Tuple, Dict, Optional
+from typing import List, Tuple
 load_dotenv(override=True)
 warnings.filterwarnings("ignore", category=pd.errors.SettingWithCopyWarning)
 from nova_ph2.combinatorial_db.reactions import get_smiles_from_reaction, get_reaction_info
-
-
-class _MoleculeDescriptor:
-    __slots__ = ("mol", "heavy_atoms", "rotatable_bonds", "inchikey")
-
-    def __init__(self, mol: Optional[Chem.Mol]):
-        self.mol = mol
-        if mol is None:
-            self.heavy_atoms = 0
-            self.rotatable_bonds = 0
-            self.inchikey = ""
-        else:
-            self.heavy_atoms = mol.GetNumHeavyAtoms()
-            self.rotatable_bonds = Descriptors.NumRotatableBonds(mol)
-            self.inchikey = Chem.MolToInchiKey(mol)
-
-
-class MoleculeDescriptorCache:
-    """
-    Cache RDKit descriptors to avoid repeatedly parsing SMILES strings.
-    This drastically reduces runtime when the same SMILES are evaluated
-    multiple times throughout the sampling loops.
-    """
-
-    def __init__(self):
-        self._cache: Dict[str, _MoleculeDescriptor] = {}
-
-    def describe(self, smiles: str) -> _MoleculeDescriptor:
-        if smiles in self._cache:
-            return self._cache[smiles]
-        mol = Chem.MolFromSmiles(smiles) if smiles else None
-        descriptor = _MoleculeDescriptor(mol)
-        self._cache[smiles] = descriptor
-        return descriptor
-
-
-_descriptor_cache = MoleculeDescriptorCache()
 
 
 def get_heavy_atom_count(smiles: str) -> int:
     """
     Calculate the number of heavy atoms in a molecule from its SMILES string.
     """
-    return _descriptor_cache.describe(smiles).heavy_atoms
+    count = 0
+    i = 0
+    while i < len(smiles):
+        c = smiles[i]
+        
+        if c.isalpha() and c.isupper():
+            elem_symbol = c
+            
+            # If the next character is a lowercase letter, include it (e.g., 'Cl', 'Br')
+            if i + 1 < len(smiles) and smiles[i + 1].islower():
+                elem_symbol += smiles[i + 1]
+                i += 1 
+            
+            # If it's not 'H', count it as a heavy atom
+            if elem_symbol != 'H':
+                count += 1
+        
+        i += 1
+    
+    return count
 
 def find_chemically_identical(smiles_list: list[str]) -> dict:
     """
@@ -64,9 +45,12 @@ def find_chemically_identical(smiles_list: list[str]) -> dict:
     
     for i, smiles in enumerate(smiles_list):
         try:
-            inchikey = _descriptor_cache.describe(smiles).inchikey
-            if inchikey:
-                inchikey_to_indices.setdefault(inchikey, []).append(i)
+            mol = Chem.MolFromSmiles(smiles)
+            if mol is not None:
+                inchikey = Chem.MolToInchiKey(mol)
+                if inchikey not in inchikey_to_indices:
+                    inchikey_to_indices[inchikey] = []
+                inchikey_to_indices[inchikey].append(i)
         except Exception as e:
             bt.logging.warning(f"Error processing SMILES {smiles}: {e}")
     
@@ -76,33 +60,32 @@ def find_chemically_identical(smiles_list: list[str]) -> dict:
 
 def num_rotatable_bonds(smiles):
     try:
-        return _descriptor_cache.describe(smiles).rotatable_bonds
+        mol = Chem.MolFromSmiles(smiles)
+        num = Descriptors.NumRotatableBonds(mol)
+        return num
     except Exception as e:
         return 0
 
 def generate_inchikey(smiles: str) -> str:
     try:
-        return _descriptor_cache.describe(smiles).inchikey
+        mol = Chem.MolFromSmiles(smiles)
+        inchikey = Chem.MolToInchiKey(mol)
+        return inchikey
     except Exception as e:
         bt.logging.error(f"Error generating InChIKey for SMILES {smiles}: {e}")
         return ""
 
 
 def validate_molecules( data: pd.DataFrame, config: dict ) -> pd.DataFrame:
-    data = data.copy()
     data['smiles'] = data["name"].apply(get_smiles_from_reaction)
-    data['_descriptor'] = data['smiles'].map(lambda s: _descriptor_cache.describe(s))
-    data['heavy_atoms'] = data['_descriptor'].map(lambda d: d.heavy_atoms)
+    data['heavy_atoms'] = data['smiles'].apply(get_heavy_atom_count)
     data = data[data['heavy_atoms'] >= config['min_heavy_atoms']]
-    data['bonds'] = data['_descriptor'].map(lambda d: d.rotatable_bonds)
+    data['bonds'] = data['smiles'].apply(num_rotatable_bonds)
     data = data[data['bonds'] >= config['min_rotatable_bonds']]
     data = data[data['bonds'] <= config['max_rotatable_bonds']]
-    data['InChIKey'] = data['_descriptor'].map(lambda d: d.inchikey)
-    data = data.drop(columns=['_descriptor'])
     return data
 
 
-@lru_cache(maxsize=None)
 def get_molecules_by_role(role_mask: int, db_path: str) -> List[Tuple[int, str, int]]:
     """
     Get all molecules that have the specified role_mask.
@@ -115,13 +98,14 @@ def get_molecules_by_role(role_mask: int, db_path: str) -> List[Tuple[int, str, 
         List of tuples (mol_id, smiles, role_mask) for molecules that match the role
     """
     try:
-        with sqlite3.connect(f"file:{db_path}?mode=ro&immutable=1", uri=True) as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT mol_id, smiles, role_mask FROM molecules WHERE (role_mask & ?) = ?", 
-                (role_mask, role_mask)
-            )
-            results = cursor.fetchall()
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro&immutable=1", uri=True)
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT mol_id, smiles, role_mask FROM molecules WHERE (role_mask & ?) = ?", 
+            (role_mask, role_mask)
+        )
+        results = cursor.fetchall()
+        conn.close()
         return results
     except Exception as e:
         bt.logging.error(f"Error getting molecules by role {role_mask}: {e}")
