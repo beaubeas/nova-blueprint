@@ -76,17 +76,21 @@ def validate_molecules(data: pd.DataFrame, config: dict) -> pd.DataFrame:
     Returns DataFrame with validated molecules and their descriptors.
     Defer InChIKey generation until after validation to avoid waste.
     """
+    if data.empty:
+        return data
+    
+    # Use vectorized operations where possible - apply is cached so it's reasonably fast
     data = data.copy()
     data['smiles'] = data["name"].apply(_get_smiles_from_reaction_cached)
     
     # Filter out None SMILES early
-    data = data[data['smiles'].notna()].copy()
+    data = data[data['smiles'].notna()]
     if data.empty:
         return data
     
-    # Get descriptors for all molecules at once
-    data['heavy_atoms'] = data["smiles"].apply(lambda d: get_heavy_atom_count(d))
-    data['bonds'] = data["smiles"].apply(lambda d: num_rotatable_bonds(d))
+    # Get descriptors for all molecules at once - apply is necessary here since functions aren't vectorizable
+    data['heavy_atoms'] = data["smiles"].apply(get_heavy_atom_count)
+    data['bonds'] = data["smiles"].apply(num_rotatable_bonds)
     
     # Filter by constraints BEFORE generating InChIKeys (saves expensive computation)
     mask = (
@@ -94,11 +98,11 @@ def validate_molecules(data: pd.DataFrame, config: dict) -> pd.DataFrame:
         (data['bonds'] >= config['min_rotatable_bonds']) &
         (data['bonds'] <= config['max_rotatable_bonds'])
     )
-    data = data[mask].copy()
+    data = data[mask]
     
     # Only generate InChIKeys for molecules that passed validation
     if not data.empty:
-        data['InChIKey'] = data["smiles"].apply(lambda d: generate_inchikey(d))
+        data['InChIKey'] = data["smiles"].apply(generate_inchikey)
     
     return data
 
@@ -148,7 +152,44 @@ def generate_valid_random_molecules_batch(rxn_id: int, n_samples: int, db_path: 
     molecules_A = get_molecules_by_role(roleA, db_path)
     molecules_B = get_molecules_by_role(roleB, db_path)
     molecules_C = get_molecules_by_role(roleC, db_path) if is_three_component else []
+
+    elite_As, elite_Bs, elite_Cs = set(), set(), set()
+    if elite_names:
+        for name in elite_names:
+            A, B, C = _parse_components(name)
+            if A is not None: elite_As.add(A)
+            if B is not None: elite_Bs.add(B)
+            if C is not None and is_three_component: elite_Cs.add(C)
+
+    pool_A_ids = _ids_from_pool(molecules_A)
+    pool_B_ids = _ids_from_pool(molecules_B)
+    pool_C_ids = _ids_from_pool(molecules_C) if is_three_component else []
     
+    # Convert pools to sets for fast lookup
+    pool_A_set = set(pool_A_ids)
+    pool_B_set = set(pool_B_ids)
+    pool_C_set = set(pool_C_ids) if is_three_component else set()
+
+    # Expand elite sets with neighborhoods
+    def expand_with_neighborhood(elite_set: set[int], pool_set: set[int], limit: int) -> set[int]:
+        """Expand elite IDs to include neighboring IDs within the limit."""
+        expanded = set(elite_set)  # Start with original elite IDs
+        for elite_id in elite_set:
+            # Add all IDs in the range [elite_id - limit, elite_id + limit]
+            for neighbor_id in range(elite_id - limit, elite_id + limit + 1):
+                if neighbor_id in pool_set:
+                    expanded.add(neighbor_id)
+        return expanded
+    
+    # Expand elite sets if they exist
+    if neighborhood_limit > 0:
+        if elite_As:
+            elite_As = expand_with_neighborhood(elite_As, pool_A_set, neighborhood_limit)
+        if elite_Bs:
+            elite_Bs = expand_with_neighborhood(elite_Bs, pool_B_set, neighborhood_limit)
+        if elite_Cs and is_three_component:
+            elite_Cs = expand_with_neighborhood(elite_Cs, pool_C_set, neighborhood_limit)
+        
     if not molecules_A or not molecules_B or (is_three_component and not molecules_C):
         bt.logging.error(f"No molecules found for roles A={roleA}, B={roleB}, C={roleC}")
         return pd.DataFrame(columns=["name", "smiles", "InChIKey"])
@@ -169,24 +210,29 @@ def generate_valid_random_molecules_batch(rxn_id: int, n_samples: int, db_path: 
             elite_batch = generate_offspring_from_elites(
                 rxn_id=rxn_id,
                 n=n_elite,
-                elite_names=elite_names,
-                molecules_A=molecules_A,
-                molecules_B=molecules_B,
-                molecules_C=molecules_C,
+                pool_A_ids=pool_A_ids,
+                pool_B_ids=pool_B_ids,
+                pool_C_ids=pool_C_ids,
+                elite_As=elite_As,
+                elite_Bs=elite_Bs,
+                elite_Cs=elite_Cs,
                 is_three_component=is_three_component,
                 mutation_prob=mutation_prob,
                 seed=seed,
                 avoid_names=emitted_names,
                 avoid_inchikeys=avoid_inchikeys,
                 max_tries=10,
-                neighborhood_limit=neighborhood_limit
             )
             emitted_names.update(elite_batch)
 
             rand_batch = generate_molecules_from_pools(
                 rxn_id, n_rand, molecules_A, molecules_B, molecules_C, is_three_component, seed
             )
-            rand_batch = [n for n in rand_batch if n and (n not in emitted_names)]
+            # Filter out names already in elite_batch efficiently
+            if emitted_names:
+                rand_batch = [n for n in rand_batch if n and n not in emitted_names]
+            else:
+                rand_batch = [n for n in rand_batch if n]
             batch_molecules = elite_batch + rand_batch
         else:
             batch_molecules = generate_molecules_from_pools(
@@ -206,22 +252,22 @@ def generate_valid_random_molecules_batch(rxn_id: int, n_samples: int, db_path: 
         if batch_df.empty:
             continue
 
-        # Remove duplicates and already seen molecules in one pass
+        # Remove duplicates and already seen molecules efficiently
         # First, remove chemically identical within batch (keep first of each group)
         batch_df = batch_df.drop_duplicates(subset=["InChIKey"], keep="first")
         
-        # Then filter out molecules we've already seen in this generation batch
-        batch_df = batch_df[~batch_df["InChIKey"].isin(seen_keys)]
-        
-        # Also filter out molecules from previous iterations (avoid_inchikeys)
+        # Combine all filters into one mask for efficiency
+        mask = ~batch_df["InChIKey"].isin(seen_keys)
         if avoid_inchikeys:
-            batch_df = batch_df[~batch_df["InChIKey"].isin(avoid_inchikeys)]
+            mask = mask & ~batch_df["InChIKey"].isin(avoid_inchikeys)
+        batch_df = batch_df[mask]
         
         if batch_df.empty:
             continue
         
-        # Update seen_keys and accumulate DataFrame
+        # Update seen_keys and accumulate DataFrame (use .values for efficiency)
         seen_keys.update(batch_df["InChIKey"].values)
+        # Only copy necessary columns to reduce memory usage
         valid_dfs.append(batch_df[["name", "smiles", "InChIKey"]].copy())
         total_valid += len(batch_df)
         
@@ -275,13 +321,18 @@ def _parse_components(name: str) -> tuple[int, int, int | None]:
 def _ids_from_pool(pool):
     return [x[0] for x in pool]
 
-def generate_offspring_from_elites(rxn_id: int, n: int, elite_names: list[str],
-                                   molecules_A, molecules_B, molecules_C, is_three_component: bool,
+def generate_offspring_from_elites(rxn_id: int, n: int,
+                                   is_three_component: bool,
+                                   pool_A_ids: list[int],
+                                   pool_B_ids: list[int],
+                                   pool_C_ids: list[int],
+                                   elite_As: set[int],
+                                   elite_Bs: set[int],
+                                   elite_Cs: set[int],
                                    mutation_prob: float = 0.1, seed: int | None = None,
                                    avoid_names: set[str] = None,
                                    avoid_inchikeys: set[str] = None,
-                                   max_tries: int = 10,
-                                   neighborhood_limit: int = 5) -> list[str]:
+                                   max_tries: int = 10) -> list[str]:
     """
     Generate offspring molecules from elite parents with mutation probability.
     Uses isolated random number generator for thread-safety.
@@ -297,51 +348,17 @@ def generate_offspring_from_elites(rxn_id: int, n: int, elite_names: list[str],
         avoid_names: Set of molecule names to avoid
         avoid_inchikeys: Set of InChIKeys to avoid
         max_tries: Maximum attempts to generate a valid offspring
-        neighborhood_limit: Range to expand around each elite ID (e.g., 5 means ±5, so range of 11)
     """
     rng = random.Random(seed) if seed is not None else random
-    elite_As, elite_Bs, elite_Cs = set(), set(), set()
-    for name in elite_names:
-        A, B, C = _parse_components(name)
-        if A is not None: elite_As.add(A)
-        if B is not None: elite_Bs.add(B)
-        if C is not None and is_three_component: elite_Cs.add(C)
-
-    pool_A_ids = _ids_from_pool(molecules_A)
-    pool_B_ids = _ids_from_pool(molecules_B)
-    pool_C_ids = _ids_from_pool(molecules_C) if is_three_component else []
-    
-    # Convert pools to sets for fast lookup
-    pool_A_set = set(pool_A_ids)
-    pool_B_set = set(pool_B_ids)
-    pool_C_set = set(pool_C_ids) if is_three_component else set()
-
-    # Expand elite sets with neighborhoods
-    def expand_with_neighborhood(elite_set: set[int], pool_set: set[int], limit: int) -> set[int]:
-        """Expand elite IDs to include neighboring IDs within the limit."""
-        expanded = set(elite_set)  # Start with original elite IDs
-        for elite_id in elite_set:
-            # Add all IDs in the range [elite_id - limit, elite_id + limit]
-            for neighbor_id in range(elite_id - limit, elite_id + limit + 1):
-                if neighbor_id in pool_set:
-                    expanded.add(neighbor_id)
-        return expanded
-    
-    # Expand elite sets if they exist
-    if elite_As:
-        elite_As = expand_with_neighborhood(elite_As, pool_A_set, neighborhood_limit)
-    if elite_Bs:
-        elite_Bs = expand_with_neighborhood(elite_Bs, pool_B_set, neighborhood_limit)
-    if elite_Cs and is_three_component:
-        elite_Cs = expand_with_neighborhood(elite_Cs, pool_C_set, neighborhood_limit)
-
-    # Cache list conversions for elite sets
     elite_As_list = list(elite_As) if elite_As else []
     elite_Bs_list = list(elite_Bs) if elite_Bs else []
     elite_Cs_list = list(elite_Cs) if elite_Cs else []
 
     out = []
     local_names = set()
+    # Pre-check if we need to avoid InChIKeys to optimize the inner loop
+    check_inchikeys = avoid_inchikeys is not None and len(avoid_inchikeys) > 0
+    
     for _ in range(n):
         cand = None
         name = None
@@ -358,12 +375,15 @@ def generate_offspring_from_elites(rxn_id: int, n: int, elite_names: list[str],
             else:
                 name = f"rxn:{rxn_id}:{A}:{B}"
 
+            # Fast checks first (set membership is O(1))
             if avoid_names and name in avoid_names:
                 continue
             if name in local_names:
                 continue
 
-            if avoid_inchikeys:
+            # Only check InChIKey if we haven't found a candidate yet and avoid_inchikeys is provided
+            # This avoids expensive InChIKey generation for names we'll skip anyway
+            if check_inchikeys:
                 try:
                     key = _inchikey_from_name_cached(name)
                     if key and key in avoid_inchikeys:
@@ -375,9 +395,7 @@ def generate_offspring_from_elites(rxn_id: int, n: int, elite_names: list[str],
             break
 
         if cand is None:
-            # Fallback: use last generated name if all tries failed
             if name is None:
-                # Generate a default name as last resort
                 A = rng.choice(pool_A_ids)
                 B = rng.choice(pool_B_ids)
                 if is_three_component:
