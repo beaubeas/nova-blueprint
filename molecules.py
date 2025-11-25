@@ -23,7 +23,7 @@ def _get_smiles_from_reaction_cached(name: str):
     except Exception:
         return None
 
-@lru_cache(maxsize=100000)
+@lru_cache(maxsize=200_000)
 def _mol_from_smiles_cached(smiles: str):
     """Cache molecule parsing to avoid repeated SMILES parsing."""
     if not smiles:
@@ -109,16 +109,6 @@ def validate_molecules(data: pd.DataFrame, config: dict) -> pd.DataFrame:
 
 @lru_cache(maxsize=None)
 def get_molecules_by_role(role_mask: int, db_path: str) -> List[Tuple[int, str, int]]:
-    """
-    Get all molecules that have the specified role_mask.
-    
-    Args:
-        role_mask: The role mask to filter by
-        db_path: Path to the molecules database
-        
-    Returns:
-        List of tuples (mol_id, smiles, role_mask) for molecules that match the role
-    """
     try:
         abs_db_path = os.path.abspath(db_path)
         with sqlite3.connect(f"file:{abs_db_path}?mode=ro&immutable=1", uri=True) as conn:
@@ -137,10 +127,8 @@ def get_molecules_by_role(role_mask: int, db_path: str) -> List[Tuple[int, str, 
 def generate_valid_random_molecules_batch(rxn_id: int, n_samples: int, db_path: str, subnet_config: dict, 
                                  batch_size: int = 200, seed: int = None,
                                  elite_names: list[str] = None, elite_frac: float = 0.5, mutation_prob: float = 0.1,
-                                 avoid_inchikeys: set[str] = None, neighborhood_limit: int = 5) -> pd.DataFrame:
-    """
-    Efficiently generate n_samples valid molecules by generating them in batches and validating.
-    """
+                                 avoid_inchikeys: set[str] = None, component_weights: dict = None) -> pd.DataFrame:
+    
     reaction_info = get_reaction_info(rxn_id, db_path)
     if not reaction_info:
         bt.logging.error(f"Could not get reaction info for rxn_id {rxn_id}")
@@ -153,54 +141,17 @@ def generate_valid_random_molecules_batch(rxn_id: int, n_samples: int, db_path: 
     molecules_B = get_molecules_by_role(roleB, db_path)
     molecules_C = get_molecules_by_role(roleC, db_path) if is_three_component else []
 
-    elite_As, elite_Bs, elite_Cs = set(), set(), set()
-    if elite_names:
-        for name in elite_names:
-            A, B, C = _parse_components(name)
-            if A is not None: elite_As.add(A)
-            if B is not None: elite_Bs.add(B)
-            if C is not None and is_three_component: elite_Cs.add(C)
-
-    pool_A_ids = _ids_from_pool(molecules_A)
-    pool_B_ids = _ids_from_pool(molecules_B)
-    pool_C_ids = _ids_from_pool(molecules_C) if is_three_component else []
-    
-    # Convert pools to sets for fast lookup
-    pool_A_set = set(pool_A_ids)
-    pool_B_set = set(pool_B_ids)
-    pool_C_set = set(pool_C_ids) if is_three_component else set()
-
-    # Expand elite sets with neighborhoods
-    def expand_with_neighborhood(elite_set: set[int], pool_set: set[int], limit: int) -> set[int]:
-        """Expand elite IDs to include neighboring IDs within the limit."""
-        expanded = set(elite_set)  # Start with original elite IDs
-        for elite_id in elite_set:
-            # Add all IDs in the range [elite_id - limit, elite_id + limit]
-            for neighbor_id in range(elite_id - limit, elite_id + limit + 1):
-                if neighbor_id in pool_set:
-                    expanded.add(neighbor_id)
-        return expanded
-    
-    # Expand elite sets if they exist
-    if neighborhood_limit > 0:
-        if elite_As:
-            elite_As = expand_with_neighborhood(elite_As, pool_A_set, neighborhood_limit)
-        if elite_Bs:
-            elite_Bs = expand_with_neighborhood(elite_Bs, pool_B_set, neighborhood_limit)
-        if elite_Cs and is_three_component:
-            elite_Cs = expand_with_neighborhood(elite_Cs, pool_C_set, neighborhood_limit)
-        
     if not molecules_A or not molecules_B or (is_three_component and not molecules_C):
         bt.logging.error(f"No molecules found for roles A={roleA}, B={roleB}, C={roleC}")
         return pd.DataFrame(columns=["name", "smiles", "InChIKey"])
 
-    valid_dfs = []  # Accumulate DataFrames instead of dict records
+    valid_dfs = []
     seen_keys = set()
-    total_valid = 0  # Track total to avoid recalculating
+    total_valid = 0
     
     while total_valid < n_samples:
         needed = n_samples - total_valid
-        batch_size_actual = min(batch_size, needed * 2)
+        batch_size_actual = min(max(batch_size, 300), needed * 2)
         
         emitted_names = set()
         if elite_names:
@@ -210,12 +161,10 @@ def generate_valid_random_molecules_batch(rxn_id: int, n_samples: int, db_path: 
             elite_batch = generate_offspring_from_elites(
                 rxn_id=rxn_id,
                 n=n_elite,
-                pool_A_ids=pool_A_ids,
-                pool_B_ids=pool_B_ids,
-                pool_C_ids=pool_C_ids,
-                elite_As=elite_As,
-                elite_Bs=elite_Bs,
-                elite_Cs=elite_Cs,
+                elite_names=elite_names,
+                molecules_A=molecules_A,
+                molecules_B=molecules_B,
+                molecules_C=molecules_C,
                 is_three_component=is_three_component,
                 mutation_prob=mutation_prob,
                 seed=seed,
@@ -226,17 +175,13 @@ def generate_valid_random_molecules_batch(rxn_id: int, n_samples: int, db_path: 
             emitted_names.update(elite_batch)
 
             rand_batch = generate_molecules_from_pools(
-                rxn_id, n_rand, molecules_A, molecules_B, molecules_C, is_three_component, seed
+                rxn_id, n_rand, molecules_A, molecules_B, molecules_C, is_three_component, seed, component_weights
             )
-            # Filter out names already in elite_batch efficiently
-            if emitted_names:
-                rand_batch = [n for n in rand_batch if n and n not in emitted_names]
-            else:
-                rand_batch = [n for n in rand_batch if n]
+            rand_batch = [n for n in rand_batch if n and (n not in emitted_names)]
             batch_molecules = elite_batch + rand_batch
         else:
             batch_molecules = generate_molecules_from_pools(
-                rxn_id, batch_size_actual, molecules_A, molecules_B, molecules_C, is_three_component, seed
+                rxn_id, batch_size_actual, molecules_A, molecules_B, molecules_C, is_three_component, seed, component_weights
             )
         
         if not batch_molecules:
@@ -252,11 +197,8 @@ def generate_valid_random_molecules_batch(rxn_id: int, n_samples: int, db_path: 
         if batch_df.empty:
             continue
 
-        # Remove duplicates and already seen molecules efficiently
-        # First, remove chemically identical within batch (keep first of each group)
         batch_df = batch_df.drop_duplicates(subset=["InChIKey"], keep="first")
         
-        # Combine all filters into one mask for efficiency
         mask = ~batch_df["InChIKey"].isin(seen_keys)
         if avoid_inchikeys:
             mask = mask & ~batch_df["InChIKey"].isin(avoid_inchikeys)
@@ -265,9 +207,7 @@ def generate_valid_random_molecules_batch(rxn_id: int, n_samples: int, db_path: 
         if batch_df.empty:
             continue
         
-        # Update seen_keys and accumulate DataFrame (use .values for efficiency)
         seen_keys.update(batch_df["InChIKey"].values)
-        # Only copy necessary columns to reduce memory usage
         valid_dfs.append(batch_df[["name", "smiles", "InChIKey"]].copy())
         total_valid += len(batch_df)
         
@@ -283,17 +223,42 @@ def generate_valid_random_molecules_batch(rxn_id: int, n_samples: int, db_path: 
 
 
 def generate_molecules_from_pools(rxn_id: int, n: int, molecules_A: List[Tuple], molecules_B: List[Tuple], 
-                                molecules_C: List[Tuple], is_three_component: bool, seed: int = None) -> List[str]:
-    """
-    Generate molecules from pools using vectorized operations for better performance.
-    """
+                                molecules_C: List[Tuple], is_three_component: bool, seed: int = None,
+                                component_weights: dict = None) -> List[str]:
+    
     rng = random.Random(seed) if seed is not None else random
     
     A_ids = [a[0] for a in molecules_A]
     B_ids = [b[0] for b in molecules_B]
     C_ids = [c[0] for c in molecules_C] if is_three_component else None
     
-    try:
+    # Use weighted sampling if component weights are provided
+    if component_weights:
+        # Build weights for each component pool
+        weights_A = [component_weights.get('A', {}).get(aid, 1.0) for aid in A_ids]
+        weights_B = [component_weights.get('B', {}).get(bid, 1.0) for bid in B_ids]
+        weights_C = [component_weights.get('C', {}).get(cid, 1.0) for cid in C_ids] if is_three_component else None
+        
+        # Normalize weights
+        if weights_A:
+            sum_w = sum(weights_A)
+            weights_A = [w / sum_w if sum_w > 0 else 1.0/len(weights_A) for w in weights_A]
+        if weights_B:
+            sum_w = sum(weights_B)
+            weights_B = [w / sum_w if sum_w > 0 else 1.0/len(weights_B) for w in weights_B]
+        if weights_C:
+            sum_w = sum(weights_C)
+            weights_C = [w / sum_w if sum_w > 0 else 1.0/len(weights_C) for w in weights_C]
+        
+        picks_A = rng.choices(A_ids, weights=weights_A, k=n) if weights_A else rng.choices(A_ids, k=n)
+        picks_B = rng.choices(B_ids, weights=weights_B, k=n) if weights_B else rng.choices(B_ids, k=n)
+        if is_three_component:
+            picks_C = rng.choices(C_ids, weights=weights_C, k=n) if weights_C else rng.choices(C_ids, k=n)
+            names = [f"rxn:{rxn_id}:{a}:{b}:{c}" for a, b, c in zip(picks_A, picks_B, picks_C)]
+        else:
+            names = [f"rxn:{rxn_id}:{a}:{b}" for a, b in zip(picks_A, picks_B)]
+    else:
+        # Uniform random sampling
         picks_A = rng.choices(A_ids, k=n)
         picks_B = rng.choices(B_ids, k=n)
         if is_three_component:
@@ -301,13 +266,10 @@ def generate_molecules_from_pools(rxn_id: int, n: int, molecules_A: List[Tuple],
             names = [f"rxn:{rxn_id}:{a}:{b}:{c}" for a, b, c in zip(picks_A, picks_B, picks_C)]
         else:
             names = [f"rxn:{rxn_id}:{a}:{b}" for a, b in zip(picks_A, picks_B)]
-        
-        # Remove duplicates while preserving order
-        names = list(dict.fromkeys(names))
-        return names
-    except Exception as e:
-        bt.logging.error(f"Error generating molecules from pools: {e}")
-        return []
+    
+    # Remove duplicates while preserving order
+    names = list(dict.fromkeys(names))
+    return names
 
 def _parse_components(name: str) -> tuple[int, int, int | None]:
     # name format: "rxn:{rxn_id}:{A}:{B}" or "rxn:{rxn_id}:{A}:{B}:{C}"
@@ -323,33 +285,27 @@ def _ids_from_pool(pool):
 
 def generate_offspring_from_elites(rxn_id: int, n: int,
                                    is_three_component: bool,
-                                   pool_A_ids: list[int],
-                                   pool_B_ids: list[int],
-                                   pool_C_ids: list[int],
-                                   elite_As: set[int],
-                                   elite_Bs: set[int],
-                                   elite_Cs: set[int],
+                                   elite_names:list,
+                                   molecules_A:list,
+                                   molecules_B:list,
+                                   molecules_C:list,
                                    mutation_prob: float = 0.1, seed: int | None = None,
                                    avoid_names: set[str] = None,
                                    avoid_inchikeys: set[str] = None,
                                    max_tries: int = 10) -> list[str]:
-    """
-    Generate offspring molecules from elite parents with mutation probability.
-    Uses isolated random number generator for thread-safety.
     
-    Args:
-        rxn_id: Reaction ID
-        n: Number of offspring to generate
-        elite_names: List of elite molecule names
-        molecules_A, molecules_B, molecules_C: Molecule pools for each role
-        is_three_component: Whether this is a 3-component reaction
-        mutation_prob: Probability of mutating away from elite (0-1)
-        seed: Random seed for reproducibility
-        avoid_names: Set of molecule names to avoid
-        avoid_inchikeys: Set of InChIKeys to avoid
-        max_tries: Maximum attempts to generate a valid offspring
-    """
     rng = random.Random(seed) if seed is not None else random
+    elite_As, elite_Bs, elite_Cs = set(), set(), set()
+    for name in elite_names:
+        A, B, C = _parse_components(name)
+        if A is not None: elite_As.add(A)
+        if B is not None: elite_Bs.add(B)
+        if C is not None and is_three_component: elite_Cs.add(C)
+
+    pool_A_ids = _ids_from_pool(molecules_A)
+    pool_B_ids = _ids_from_pool(molecules_B)
+    pool_C_ids = _ids_from_pool(molecules_C) if is_three_component else []
+    
     elite_As_list = list(elite_As) if elite_As else []
     elite_Bs_list = list(elite_Bs) if elite_Bs else []
     elite_Cs_list = list(elite_Cs) if elite_Cs else []
@@ -381,8 +337,6 @@ def generate_offspring_from_elites(rxn_id: int, n: int,
             if name in local_names:
                 continue
 
-            # Only check InChIKey if we haven't found a candidate yet and avoid_inchikeys is provided
-            # This avoids expensive InChIKey generation for names we'll skip anyway
             if check_inchikeys:
                 try:
                     key = _inchikey_from_name_cached(name)
