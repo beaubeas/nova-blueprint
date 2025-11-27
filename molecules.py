@@ -140,6 +140,9 @@ def generate_valid_random_molecules_batch(rxn_id: int, n_samples: int, db_path: 
     molecules_A = get_molecules_by_role(roleA, db_path)
     molecules_B = get_molecules_by_role(roleB, db_path)
     molecules_C = get_molecules_by_role(roleC, db_path) if is_three_component else []
+    pool_A_ids = _ids_from_pool(molecules_A)
+    pool_B_ids = _ids_from_pool(molecules_B)
+    pool_C_ids = _ids_from_pool(molecules_C) if is_three_component else []
 
     if not molecules_A or not molecules_B or (is_three_component and not molecules_C):
         bt.logging.error(f"No molecules found for roles A={roleA}, B={roleB}, C={roleC}")
@@ -162,9 +165,9 @@ def generate_valid_random_molecules_batch(rxn_id: int, n_samples: int, db_path: 
                 rxn_id=rxn_id,
                 n=n_elite,
                 elite_names=elite_names,
-                molecules_A=molecules_A,
-                molecules_B=molecules_B,
-                molecules_C=molecules_C,
+                pool_A_ids=pool_A_ids,
+                pool_B_ids=pool_B_ids,
+                pool_C_ids=pool_C_ids,
                 is_three_component=is_three_component,
                 mutation_prob=mutation_prob,
                 seed=seed,
@@ -286,9 +289,9 @@ def _ids_from_pool(pool):
 def generate_offspring_from_elites(rxn_id: int, n: int,
                                    is_three_component: bool,
                                    elite_names:list,
-                                   molecules_A:list,
-                                   molecules_B:list,
-                                   molecules_C:list,
+                                   pool_A_ids:list,
+                                   pool_B_ids:list,
+                                   pool_C_ids:list,
                                    mutation_prob: float = 0.1, seed: int | None = None,
                                    avoid_names: set[str] = None,
                                    avoid_inchikeys: set[str] = None,
@@ -301,10 +304,6 @@ def generate_offspring_from_elites(rxn_id: int, n: int,
         if A is not None: elite_As.add(A)
         if B is not None: elite_Bs.add(B)
         if C is not None and is_three_component: elite_Cs.add(C)
-
-    pool_A_ids = _ids_from_pool(molecules_A)
-    pool_B_ids = _ids_from_pool(molecules_B)
-    pool_C_ids = _ids_from_pool(molecules_C) if is_three_component else []
     
     elite_As_list = list(elite_As) if elite_As else []
     elite_Bs_list = list(elite_Bs) if elite_Bs else []
