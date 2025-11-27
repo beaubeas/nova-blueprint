@@ -242,13 +242,12 @@ def main(config: dict):
         elite_df = select_diverse_elites(top_pool, min(100, len(top_pool))) if not top_pool.empty else pd.DataFrame()
         elite_names = elite_df["name"].tolist() if not elite_df.empty else None
         
-        if prev_avg_score is not None:
-            if score_improvement_rate > 0.01:  # Good improvement
-                elite_frac = min(0.7, elite_frac * 1.1)
-                mutation_prob = max(0.05, mutation_prob * 0.95)
-            elif score_improvement_rate < -0.01:  # Declining
-                elite_frac = max(0.2, elite_frac * 0.9)
-                mutation_prob = min(0.4, mutation_prob * 1.1)
+        if score_improvement_rate > 0.01:  # Good improvement
+            elite_frac = min(0.7, elite_frac * 1.1)
+            mutation_prob = max(0.05, mutation_prob * 0.95)
+        elif score_improvement_rate < -0.01:  # Declining
+            elite_frac = max(0.2, elite_frac * 0.9)
+            mutation_prob = min(0.4, mutation_prob * 1.1)
         
         data = generate_valid_random_molecules_batch(rxn_id, n_samples=n_samples_first_iteration if iteration == 1 else n_samples, db_path=DB_PATH, subnet_config=config, batch_size=300, elite_names=elite_names, 
                                                      elite_frac=elite_frac, mutation_prob=mutation_prob, avoid_inchikeys=seen_inchikeys, component_weights=component_weights)
@@ -282,7 +281,7 @@ def main(config: dict):
         bt.logging.info(f"[Miner] Iteration {iteration}: Inference finished within {round(time.time() - start_time,2)}")
         seen_inchikeys.update([k for k in data["InChIKey"].tolist() if k])
         total_data = data[["name", "smiles", "InChIKey", "score", "Target", "Anti"]]
-        prev_avg_score = top_pool['score'].mean() if not top_pool.empty else None
+        # prev_avg_score = top_pool['score'].mean() if not top_pool.empty else None
         top_pool = pd.concat([top_pool, total_data])
         top_pool = top_pool.drop_duplicates(subset=["InChIKey"], keep="first")
         top_pool = top_pool.sort_values(by="score", ascending=False)
