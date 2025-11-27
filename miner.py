@@ -228,6 +228,7 @@ def main(config: dict):
     mutation_prob = 0.1
     elite_frac = 0.25
     prev_avg_score = None
+    current_avg_score = None
     score_improvement_rate = 0.0
     seen_inchikeys = set()
     start = time.time()
@@ -237,19 +238,11 @@ def main(config: dict):
         iteration += 1
         start_time = time.time()
         
-        # Build component weights from top pool for score-guided sampling
         component_weights = build_component_weights(top_pool, rxn_id) if not top_pool.empty else None
-        
-        # Select diverse elites (not just top by score)
         elite_df = select_diverse_elites(top_pool, min(100, len(top_pool))) if not top_pool.empty else pd.DataFrame()
         elite_names = elite_df["name"].tolist() if not elite_df.empty else None
         
-        # Adaptive sampling: adjust based on score improvement
-        if prev_avg_score is not None and not top_pool.empty:
-            current_avg = top_pool['score'].mean()
-            score_improvement_rate = (current_avg - prev_avg_score) / max(abs(prev_avg_score), 1e-6)
-            
-            # If improving well, increase exploitation; if stagnating, increase exploration
+        if prev_avg_score is not None:
             if score_improvement_rate > 0.01:  # Good improvement
                 elite_frac = min(0.7, elite_frac * 1.1)
                 mutation_prob = max(0.05, mutation_prob * 0.95)
@@ -259,8 +252,6 @@ def main(config: dict):
         
         data = generate_valid_random_molecules_batch(rxn_id, n_samples=n_samples_first_iteration if iteration == 1 else n_samples, db_path=DB_PATH, subnet_config=config, batch_size=300, elite_names=elite_names, 
                                                      elite_frac=elite_frac, mutation_prob=mutation_prob, avoid_inchikeys=seen_inchikeys, component_weights=component_weights)
-        
-        bt.logging.info(f"[Miner] Iteration {iteration}: {len(data)} Samples Generated within {round(time.time() - start_time,2)}")
         
         if data.empty:
             bt.logging.warning(f"[Miner] Iteration {iteration}: No valid molecules produced; continuing")
@@ -290,24 +281,18 @@ def main(config: dict):
         data['score'] = data['Target'] - (config['antitarget_weight'] * data['Anti'])
         bt.logging.info(f"[Miner] Iteration {iteration}: Inference finished within {round(time.time() - start_time,2)}")
         seen_inchikeys.update([k for k in data["InChIKey"].tolist() if k])
-        # Keep Target and Anti columns for statistics
         total_data = data[["name", "smiles", "InChIKey", "score", "Target", "Anti"]]
+        prev_avg_score = top_pool['score'].mean() if not top_pool.empty else None
         top_pool = pd.concat([top_pool, total_data])
         top_pool = top_pool.drop_duplicates(subset=["InChIKey"], keep="first")
         top_pool = top_pool.sort_values(by="score", ascending=False)
         top_pool = top_pool.head(config["num_molecules"])
-        
-        # Calculate and log statistics
-        avg_score = top_pool['score'].mean()
-        max_score = top_pool['score'].max()
-        min_score = top_pool['score'].min()
-        avg_target = top_pool['Target'].mean() if 'Target' in top_pool.columns else 0
-        avg_antitarget = top_pool['Anti'].mean() if 'Anti' in top_pool.columns else 0
-        
-        bt.logging.info(f"[Miner] Iteration {iteration}: Average top score: {avg_score:.4f}")
-        bt.logging.info(f"[Miner] Iteration {iteration}: Max score: {max_score:.4f}, Min score: {min_score:.4f}")
-        bt.logging.info(f"[Miner] Iteration {iteration}: Finished within {round(time.time() - start_time,2)}")
-        
+        current_avg_score = top_pool['score'].mean() if not top_pool.empty else None
+        if current_avg_score is not None and prev_avg_score is not None:
+            score_improvement_rate = (current_avg_score - prev_avg_score) / max(abs(prev_avg_score), 1e-6)
+        elif current_avg_score is not None:
+            score_improvement_rate = 0.0
+        bt.logging.info(f"[Miner] Iteration {iteration} || Time: {round(time.time() - start_time,2)} | Avg: {top_pool['score'].mean():.4f} | Max: {top_pool['score'].max():.4f} | Min: {top_pool['score'].min():.4f} | Improve: {score_improvement_rate*100:.2f}% | Elite frac: {elite_frac:.2f} | Mute: {mutation_prob:.2f}")
         top_entries = {"molecules": top_pool["name"].tolist()}
         with open(os.path.join(OUTPUT_DIR, "result.json"), "w") as f:
             json.dump(top_entries, f, ensure_ascii=False, indent=2)
@@ -315,7 +300,5 @@ def main(config: dict):
 if __name__ == "__main__":
     
     config = get_config()
-    start_time_1 = time.time()
     initialize_models(config)
-    bt.logging.info(f"{time.time() - start_time_1} seconds for model initialization")
     main(config)
