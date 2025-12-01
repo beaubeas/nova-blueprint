@@ -140,9 +140,6 @@ def generate_valid_random_molecules_batch(rxn_id: int, n_samples: int, db_path: 
     molecules_A = get_molecules_by_role(roleA, db_path)
     molecules_B = get_molecules_by_role(roleB, db_path)
     molecules_C = get_molecules_by_role(roleC, db_path) if is_three_component else []
-    pool_A_ids = _ids_from_pool(molecules_A)
-    pool_B_ids = _ids_from_pool(molecules_B)
-    pool_C_ids = _ids_from_pool(molecules_C) if is_three_component else []
 
     if not molecules_A or not molecules_B or (is_three_component and not molecules_C):
         bt.logging.error(f"No molecules found for roles A={roleA}, B={roleB}, C={roleC}")
@@ -165,9 +162,9 @@ def generate_valid_random_molecules_batch(rxn_id: int, n_samples: int, db_path: 
                 rxn_id=rxn_id,
                 n=n_elite,
                 elite_names=elite_names,
-                pool_A_ids=pool_A_ids,
-                pool_B_ids=pool_B_ids,
-                pool_C_ids=pool_C_ids,
+                molecules_A=molecules_A,
+                molecules_B=molecules_B,
+                molecules_C=molecules_C,
                 is_three_component=is_three_component,
                 mutation_prob=mutation_prob,
                 seed=seed,
@@ -178,13 +175,13 @@ def generate_valid_random_molecules_batch(rxn_id: int, n_samples: int, db_path: 
             emitted_names.update(elite_batch)
 
             rand_batch = generate_molecules_from_pools(
-                rxn_id, n_rand, pool_A_ids, pool_B_ids, pool_C_ids, is_three_component, seed, component_weights
+                rxn_id, n_rand, molecules_A, molecules_B, molecules_C, is_three_component, seed, component_weights
             )
             rand_batch = [n for n in rand_batch if n and (n not in emitted_names)]
             batch_molecules = elite_batch + rand_batch
         else:
             batch_molecules = generate_molecules_from_pools(
-                rxn_id, batch_size_actual, pool_A_ids, pool_B_ids, pool_C_ids, is_three_component, seed, component_weights
+                rxn_id, batch_size_actual, molecules_A, molecules_B, molecules_C, is_three_component, seed, component_weights
             )
         
         if not batch_molecules:
@@ -225,18 +222,22 @@ def generate_valid_random_molecules_batch(rxn_id: int, n_samples: int, db_path: 
     return result_df.head(n_samples).copy()
 
 
-def generate_molecules_from_pools(rxn_id: int, n: int, pool_A_ids: list, pool_B_ids: list, 
-                                pool_C_ids: list, is_three_component: bool, seed: int = None,
+def generate_molecules_from_pools(rxn_id: int, n: int, molecules_A: List[Tuple], molecules_B: List[Tuple], 
+                                molecules_C: List[Tuple], is_three_component: bool, seed: int = None,
                                 component_weights: dict = None) -> List[str]:
     
     rng = random.Random(seed) if seed is not None else random
-
+    
+    A_ids = [a[0] for a in molecules_A]
+    B_ids = [b[0] for b in molecules_B]
+    C_ids = [c[0] for c in molecules_C] if is_three_component else None
+    
     # Use weighted sampling if component weights are provided
     if component_weights:
         # Build weights for each component pool
-        weights_A = [component_weights.get('A', {}).get(aid, 1.0) for aid in pool_A_ids]
-        weights_B = [component_weights.get('B', {}).get(bid, 1.0) for bid in pool_B_ids]
-        weights_C = [component_weights.get('C', {}).get(cid, 1.0) for cid in pool_C_ids] if is_three_component else None
+        weights_A = [component_weights.get('A', {}).get(aid, 1.0) for aid in A_ids]
+        weights_B = [component_weights.get('B', {}).get(bid, 1.0) for bid in B_ids]
+        weights_C = [component_weights.get('C', {}).get(cid, 1.0) for cid in C_ids] if is_three_component else None
         
         # Normalize weights
         if weights_A:
@@ -249,19 +250,19 @@ def generate_molecules_from_pools(rxn_id: int, n: int, pool_A_ids: list, pool_B_
             sum_w = sum(weights_C)
             weights_C = [w / sum_w if sum_w > 0 else 1.0/len(weights_C) for w in weights_C]
         
-        picks_A = rng.choices(pool_A_ids, weights=weights_A, k=n) if weights_A else rng.choices(pool_A_ids, k=n)
-        picks_B = rng.choices(pool_B_ids, weights=weights_B, k=n) if weights_B else rng.choices(pool_B_ids, k=n)
+        picks_A = rng.choices(A_ids, weights=weights_A, k=n) if weights_A else rng.choices(A_ids, k=n)
+        picks_B = rng.choices(B_ids, weights=weights_B, k=n) if weights_B else rng.choices(B_ids, k=n)
         if is_three_component:
-            picks_C = rng.choices(pool_C_ids, weights=weights_C, k=n) if weights_C else rng.choices(pool_C_ids, k=n)
+            picks_C = rng.choices(C_ids, weights=weights_C, k=n) if weights_C else rng.choices(C_ids, k=n)
             names = [f"rxn:{rxn_id}:{a}:{b}:{c}" for a, b, c in zip(picks_A, picks_B, picks_C)]
         else:
             names = [f"rxn:{rxn_id}:{a}:{b}" for a, b in zip(picks_A, picks_B)]
     else:
         # Uniform random sampling
-        picks_A = rng.choices(pool_A_ids, k=n)
-        picks_B = rng.choices(pool_B_ids, k=n)
+        picks_A = rng.choices(A_ids, k=n)
+        picks_B = rng.choices(B_ids, k=n)
         if is_three_component:
-            picks_C = rng.choices(pool_C_ids, k=n)
+            picks_C = rng.choices(C_ids, k=n)
             names = [f"rxn:{rxn_id}:{a}:{b}:{c}" for a, b, c in zip(picks_A, picks_B, picks_C)]
         else:
             names = [f"rxn:{rxn_id}:{a}:{b}" for a, b in zip(picks_A, picks_B)]
@@ -285,9 +286,9 @@ def _ids_from_pool(pool):
 def generate_offspring_from_elites(rxn_id: int, n: int,
                                    is_three_component: bool,
                                    elite_names:list,
-                                   pool_A_ids:list,
-                                   pool_B_ids:list,
-                                   pool_C_ids:list,
+                                   molecules_A:list,
+                                   molecules_B:list,
+                                   molecules_C:list,
                                    mutation_prob: float = 0.1, seed: int | None = None,
                                    avoid_names: set[str] = None,
                                    avoid_inchikeys: set[str] = None,
@@ -300,6 +301,10 @@ def generate_offspring_from_elites(rxn_id: int, n: int,
         if A is not None: elite_As.add(A)
         if B is not None: elite_Bs.add(B)
         if C is not None and is_three_component: elite_Cs.add(C)
+
+    pool_A_ids = _ids_from_pool(molecules_A)
+    pool_B_ids = _ids_from_pool(molecules_B)
+    pool_C_ids = _ids_from_pool(molecules_C) if is_three_component else []
     
     elite_As_list = list(elite_As) if elite_As else []
     elite_Bs_list = list(elite_Bs) if elite_Bs else []
