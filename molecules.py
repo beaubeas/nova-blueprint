@@ -231,16 +231,6 @@ def main(config: dict):
     score_improvement_rate = 0.0
     seen_inchikeys = set()
     start = time.time()
-    
-    # Track scores for visualization
-    score_history = {
-        'iterations': [],
-        'avg_scores': [],
-        'max_scores': [],
-        'min_scores': [],
-        'avg_target_scores': [],
-        'avg_antitarget_scores': []
-    }
 
     n_samples_first_iteration = n_samples if config["allowed_reaction"] == "rxn:5" else n_samples*4
     while time.time() - start < 1800:
