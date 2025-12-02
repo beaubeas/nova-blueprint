@@ -9,9 +9,6 @@ from pathlib import Path
 from collections import defaultdict
 from typing import Dict
 import nova_ph2
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
 
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__)))
 PARENT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -223,43 +220,6 @@ def select_diverse_elites(top_pool: pd.DataFrame, n_elites: int, min_score_ratio
     
     return candidates.loc[selected[:n_elites]] if selected else candidates.head(n_elites)
 
-def plot_scores_history(iterations, avg_scores, max_scores, min_scores):
-    """Plot and save the score history across iterations."""
-    try:
-        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10))
-        
-        ax1.plot(iterations, avg_scores, 'b-o', linewidth=2, markersize=6, label='Average Score')
-        ax1.fill_between(iterations, min_scores, max_scores, alpha=0.3, color='blue', label='Score Range')
-        ax1.set_xlabel('Iteration', fontsize=12)
-        ax1.set_ylabel('Average Score', fontsize=12)
-        ax1.set_title('Average Scores Over Iterations', fontsize=14, fontweight='bold')
-        ax1.grid(True, alpha=0.3)
-        ax1.legend()
-        ax1.set_xlim(left=0)
-        
-        if len(iterations) > 1:
-            window = min(5, len(avg_scores))
-            if window > 1:
-                moving_avg = pd.Series(avg_scores).rolling(window=window, min_periods=1).mean()
-                ax2.plot(iterations, moving_avg, 'g-', linewidth=2, label=f'Moving Average (window={window})')
-            ax2.plot(iterations, avg_scores, 'b-o', linewidth=1, markersize=4, alpha=0.5, label='Average Score')
-            ax2.set_xlabel('Iteration', fontsize=12)
-            ax2.set_ylabel('Score', fontsize=12)
-            ax2.set_title('Score Trend (with Moving Average)', fontsize=14, fontweight='bold')
-            ax2.grid(True, alpha=0.3)
-            ax2.legend()
-            ax2.set_xlim(left=0)
-        
-        plt.tight_layout()
-        
-        plt.savefig('score_history.png', dpi=150, bbox_inches='tight')
-        plt.close()
-        
-        bt.logging.info(f"[Miner] Score history plot saved")
-    except Exception as e:
-        bt.logging.error(f"Error plotting scores: {e}")
-        plt.close()
-
 def main(config: dict):
     n_samples = config["num_molecules"] * 5
     top_pool = pd.DataFrame(columns=["name", "smiles", "InChIKey", "score", "Target", "Anti"])
@@ -271,35 +231,21 @@ def main(config: dict):
     score_improvement_rate = 0.0
     seen_inchikeys = set()
     start = time.time()
-    
-    # Track scores for visualization
-    score_history = {
-        'iterations': [],
-        'avg_scores': [],
-        'max_scores': [],
-        'min_scores': [],
-        'avg_target_scores': [],
-        'avg_antitarget_scores': []
-    }
 
     n_samples_first_iteration = n_samples if config["allowed_reaction"] == "rxn:5" else n_samples*4
     while time.time() - start < 1800:
         iteration += 1
         start_time = time.time()
         
-        # Build component weights from top pool for score-guided sampling
         component_weights = build_component_weights(top_pool, rxn_id) if not top_pool.empty else None
         
-        # Select diverse elites (not just top by score)
         elite_df = select_diverse_elites(top_pool, min(100, len(top_pool))) if not top_pool.empty else pd.DataFrame()
         elite_names = elite_df["name"].tolist() if not elite_df.empty else None
         
-        # Adaptive sampling: adjust based on score improvement
         if prev_avg_score is not None and not top_pool.empty:
             current_avg = top_pool['score'].mean()
             score_improvement_rate = (current_avg - prev_avg_score) / max(abs(prev_avg_score), 1e-6)
             
-            # If improving well, increase exploitation; if stagnating, increase exploration
             if score_improvement_rate > 0.01:  # Good improvement
                 elite_frac = min(0.7, elite_frac * 1.1)
                 mutation_prob = max(0.05, mutation_prob * 0.95)
@@ -357,21 +303,6 @@ def main(config: dict):
         bt.logging.info(f"[Miner] Iteration {iteration}: Average top score: {avg_score:.4f}")
         bt.logging.info(f"[Miner] Iteration {iteration}: Max score: {max_score:.4f}, Min score: {min_score:.4f}")
         bt.logging.info(f"[Miner] Iteration {iteration}: Finished within {round(time.time() - start_time,2)}")
-        
-        # Track scores for visualization
-        score_history['iterations'].append(iteration)
-        score_history['avg_scores'].append(avg_score)
-        score_history['max_scores'].append(max_score)
-        score_history['min_scores'].append(min_score)
-        score_history['avg_target_scores'].append(avg_target)
-        score_history['avg_antitarget_scores'].append(avg_antitarget)
-        
-        plot_scores_history(
-            score_history['iterations'],
-            score_history['avg_scores'],
-            score_history['max_scores'],
-            score_history['min_scores']
-        )
         
         top_entries = {"molecules": top_pool["name"].tolist()}
         with open(os.path.join(OUTPUT_DIR, "result.json"), "w") as f:
