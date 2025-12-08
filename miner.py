@@ -142,11 +142,7 @@ def _cpu_random_candidates_with_similarity(
         random_df["tanimoto_similarity"] = sims.reindex(random_df.index).fillna(0.0)
         random_df =random_df.sort_values(by="tanimoto_similarity", ascending=False)
         random_df_filtered = random_df[random_df["tanimoto_similarity"] >= SIMILARITY_THRESHOLD]
-
-        # If fewer than 10, take top 10 from sorted list
-        if len(random_df_filtered) < 12:
-            # Take top 10 from the sorted list (regardless of threshold)
-            random_df_filtered = random_df.head(12)
+        random_df_filtered = random_df.head(12)
             
         if random_df_filtered.empty:
             return pd.DataFrame(columns=["name", "smiles", "InChIKey", "tanimoto_similarity"])
@@ -169,7 +165,7 @@ def main(config: dict):
     seed_df = pd.DataFrame(columns=["name", "smiles", "InChIKey", "tanimoto_similarity"])
     start = time.time()
 
-    n_samples_first_iteration = n_samples if config["allowed_reaction"] == "rxn:5" or "rxn:3" else n_samples * 4
+    n_samples_first_iteration = n_samples if config["allowed_reaction"] == "rxn:5" else n_samples * 4
     with ProcessPoolExecutor(max_workers=1) as cpu_executor:
         while time.time() - start < 1800:
             iteration += 1
@@ -275,5 +271,7 @@ def main(config: dict):
 
 if __name__ == "__main__":
     config = get_config()
+    start_time_1 = time.time()
     initialize_models(config)
+    bt.logging.info(f"{time.time() - start_time_1} seconds for model initialization")
     main(config)
