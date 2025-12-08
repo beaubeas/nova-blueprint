@@ -256,7 +256,6 @@ def main(config: dict):
                     bt.logging.warning(f"[Miner] CPU random/similarity computation failed; proceeding without it: {e}")
             seen_inchikeys.update([k for k in data["InChIKey"].tolist() if k])
             total_data = data[["name", "smiles", "InChIKey", "score", "Target", "Anti"]]
-            total_data.iloc[500:].to_csv(f"{iteration}.csv")
             top_pool = pd.concat([top_pool, total_data])
             top_pool = top_pool.drop_duplicates(subset=["InChIKey"], keep="first")
             top_pool = top_pool.sort_values(by="score", ascending=False)
