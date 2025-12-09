@@ -268,7 +268,7 @@ def main(config: dict):
                     bt.logging.info(f"[Miner] Iteration {iteration}: CPU similarity still running — continuing without it this iteration")
                 except Exception as e:
                     bt.logging.warning(f"[Miner] CPU random/similarity computation failed; proceeding without it: {e}")
-            seen_inchikeys.update([k for k in data["InChIKey"].tolist() if k])
+            seen_inchikeys.update([k for k in data.iloc[:500]["InChIKey"].tolist() if k])
             total_data = data[["name", "smiles", "InChIKey", "score", "Target", "Anti"]]
             top_pool = pd.concat([top_pool, total_data])
             top_pool = top_pool.drop_duplicates(subset=["InChIKey"], keep="first")
