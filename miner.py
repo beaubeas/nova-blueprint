@@ -8,6 +8,7 @@ from concurrent.futures import ProcessPoolExecutor, TimeoutError
 import pandas as pd
 from pathlib import Path
 import nova_ph2
+from itertools import combinations
 
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__)))
 PARENT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -24,6 +25,8 @@ from molecules import (
     build_component_weights,
     compute_tanimoto_similarity_to_pool,
     sample_random_valid_molecules,
+    compute_maccs_entropy
+
 )
 
 DB_PATH = str(Path(nova_ph2.__file__).resolve().parent / "combinatorial_db" / "molecules.sqlite")
@@ -153,6 +156,17 @@ def _cpu_random_candidates_with_similarity(
         bt.logging.warning(f"[Miner] _cpu_random_candidates_with_similarity failed: {e}")
         return pd.DataFrame(columns=["name", "smiles", "InChIKey"])
 
+def select_diverse_subset(pool, top_95_smiles, subset_size=5, entropy_threshold=0.1):
+    smiles_list = pool["smiles"].tolist()
+    for combination in combinations(smiles_list, subset_size):
+        test_subset = top_95_smiles + list(combination)
+        entropy = compute_maccs_entropy(test_subset)
+        if entropy >= entropy_threshold:
+            print(f"Entropy Threshold Met: {entropy:.4f}")
+            return pool[pool["smiles"].isin(combination)]
+
+    print("No combination exceeded the given entropy threshold.")
+    return pd.DataFrame()
 
 def main(config: dict):
     n_samples = config["num_molecules"] * 5
@@ -170,7 +184,11 @@ def main(config: dict):
         while time.time() - start < 1800:
             iteration += 1
             iter_start_time = time.time()
+            remaining_time = 1800 - (time.time() - start)
 
+            adjust_for_entropy = False
+            if remaining_time <= 60:
+                adjust_for_entropy = True
             component_weights = build_component_weights(top_pool, rxn_id) if not top_pool.empty else None
             elite_df = select_diverse_elites(top_pool, min(100, len(top_pool))) if not top_pool.empty else pd.DataFrame()
             elite_names = elite_df["name"].tolist() if not elite_df.empty else None
@@ -255,7 +273,25 @@ def main(config: dict):
             top_pool = pd.concat([top_pool, total_data])
             top_pool = top_pool.drop_duplicates(subset=["InChIKey"], keep="first")
             top_pool = top_pool.sort_values(by="score", ascending=False)
-            top_pool = top_pool.head(config["num_molecules"])
+            
+            if adjust_for_entropy:
+                try:
+                    top_95 = top_pool.iloc[:95]
+                    remaining_pool = top_pool.iloc[95:]  # Remaining molecules after the top 95
+                    additional_5 = select_diverse_subset(remaining_pool, top_95["smiles"].tolist(), subset_size=5, entropy_threshold=config['entropy_min_threshold'])
+                    if not additional_5.empty:
+                        top_pool = pd.concat([top_95, additional_5]).reset_index(drop=True)
+                        entropy = compute_maccs_entropy(top_pool['smiles'].to_list())
+                        bt.logging.info(f"[Miner] Iteration {iteration}: New Entropy = {entropy:.4f}")
+                    else:
+                        top_pool = top_pool.head(config["num_molecules"])
+                        entropy = compute_maccs_entropy(top_pool['smiles'].to_list())
+                        bt.logging.info(f"[Miner] Iteration {iteration}: New Entropy = {entropy:.4f}")
+                
+                except Exception as e:
+                    bt.logging.warning(f"[Miner] Entropy handling failed: {e}")
+            else:
+                top_pool = top_pool.head(config["num_molecules"])
 
             iter_total_time = time.time() - iter_start_time
             top_entries = {"molecules": top_pool["name"].tolist()}
