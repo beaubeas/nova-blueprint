@@ -18,7 +18,6 @@ OUTPUT_DIR = os.environ.get("OUTPUT_DIR", "/output")
 
 from nova_ph2.PSICHIC.wrapper import PsichicWrapper
 from nova_ph2.PSICHIC.psichic_utils.data_utils import virtual_screening
-
 from molecules import (
     generate_valid_random_molecules_batch,
     select_diverse_elites,
@@ -26,11 +25,9 @@ from molecules import (
     compute_tanimoto_similarity_to_pool,
     sample_random_valid_molecules,
     compute_maccs_entropy
-
 )
 
 DB_PATH = str(Path(nova_ph2.__file__).resolve().parent / "combinatorial_db" / "molecules.sqlite")
-SIMILARITY_THRESHOLD = 0.9
 
 
 target_models = []
@@ -120,6 +117,7 @@ def _cpu_random_candidates_with_similarity(
     subnet_config: dict,
     top_pool_df: pd.DataFrame,
     avoid_inchikeys: set[str] | None = None,
+    thresh: float = 0.8
 ) -> pd.DataFrame:
     """
     CPU-side helper:
@@ -144,7 +142,8 @@ def _cpu_random_candidates_with_similarity(
         random_df = random_df.copy()
         random_df["tanimoto_similarity"] = sims.reindex(random_df.index).fillna(0.0)
         random_df =random_df.sort_values(by="tanimoto_similarity", ascending=False)
-        random_df_filtered = random_df[random_df["tanimoto_similarity"] >= SIMILARITY_THRESHOLD]
+        random_df_filtered = random_df[random_df["tanimoto_similarity"] >= thresh]
+            
         if random_df_filtered.empty:
             return pd.DataFrame(columns=["name", "smiles", "InChIKey", "tanimoto_similarity"])
             
@@ -166,6 +165,7 @@ def select_diverse_subset(pool, top_95_smiles, subset_size=5, entropy_threshold=
     print("No combination exceeded the given entropy threshold.")
     return pd.DataFrame()
 
+
 def main(config: dict):
     n_samples = config["num_molecules"] * 5
     top_pool = pd.DataFrame(columns=["name", "smiles", "InChIKey", "score", "Target", "Anti"])
@@ -176,6 +176,10 @@ def main(config: dict):
     seen_inchikeys = set()
     seed_df = pd.DataFrame(columns=["name", "smiles", "InChIKey", "tanimoto_similarity"])
     start = time.time()
+    prev_avg_score = None
+    current_avg_score = None
+    score_improvement_rate = 0.0
+    
 
     n_samples_first_iteration = n_samples if config["allowed_reaction"] == "rxn:5" else n_samples * 4
     with ProcessPoolExecutor(max_workers=1) as cpu_executor:
@@ -187,6 +191,7 @@ def main(config: dict):
             adjust_for_entropy = False
             if remaining_time <= 60:
                 adjust_for_entropy = True
+
             component_weights = build_component_weights(top_pool, rxn_id) if not top_pool.empty else None
             elite_df = select_diverse_elites(top_pool, min(100, len(top_pool))) if not top_pool.empty else pd.DataFrame()
             elite_names = elite_df["name"].tolist() if not elite_df.empty else None
@@ -248,8 +253,8 @@ def main(config: dict):
                     config,
                     top_pool.head(5)[["name", "smiles", "InChIKey"]],
                     seen_inchikeys,
+                    0.9
                 )
-
             gpu_start_time = time.time()
             data["Target"] = target_score_from_data(data["smiles"])
             data["Anti"] = antitarget_scores()
@@ -268,10 +273,11 @@ def main(config: dict):
                     bt.logging.warning(f"[Miner] CPU random/similarity computation failed; proceeding without it: {e}")
             seen_inchikeys.update([k for k in data["InChIKey"].tolist() if k])
             total_data = data[["name", "smiles", "InChIKey", "score", "Target", "Anti"]]
+            prev_avg_score = top_pool['score'].mean() if not top_pool.empty else None
             top_pool = pd.concat([top_pool, total_data])
             top_pool = top_pool.drop_duplicates(subset=["InChIKey"], keep="first")
             top_pool = top_pool.sort_values(by="score", ascending=False)
-            
+
             if adjust_for_entropy:
                 try:
                     top_95 = top_pool.iloc[:95]
@@ -290,14 +296,21 @@ def main(config: dict):
                     bt.logging.warning(f"[Miner] Entropy handling failed: {e}")
             else:
                 top_pool = top_pool.head(config["num_molecules"])
+            
+            current_avg_score = top_pool['score'].mean() if not top_pool.empty else None
 
+            if current_avg_score is not None:
+                if prev_avg_score is not None:
+                    score_improvement_rate = (current_avg_score - prev_avg_score) / max(abs(prev_avg_score), 1e-6)
+                prev_avg_score = current_avg_score
             iter_total_time = time.time() - iter_start_time
             top_entries = {"molecules": top_pool["name"].tolist()}
             bt.logging.info(
                     f"Iteration {iteration} || Time: {iter_total_time:.2f}s | "
                     f"Avg: {top_pool['score'].mean():.4f} | Max: {top_pool['score'].max():.4f} | "
                     f"Min: {top_pool['score'].min():.4f} | Elite frac: {elite_frac:.2f} | "
-                    f"Mute: {mutation_prob:.2f}"
+                    f"Mute: {mutation_prob:.2f} | "
+                    f"Improve: {score_improvement_rate:.4f}"
                 )
 
             with open(os.path.join(OUTPUT_DIR, "result.json"), "w") as f:
