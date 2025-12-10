@@ -145,8 +145,6 @@ def _cpu_random_candidates_with_similarity(
         random_df["tanimoto_similarity"] = sims.reindex(random_df.index).fillna(0.0)
         random_df =random_df.sort_values(by="tanimoto_similarity", ascending=False)
         random_df_filtered = random_df[random_df["tanimoto_similarity"] >= SIMILARITY_THRESHOLD]
-        random_df_filtered = random_df.head(12)
-            
         if random_df_filtered.empty:
             return pd.DataFrame(columns=["name", "smiles", "InChIKey", "tanimoto_similarity"])
             
@@ -242,11 +240,11 @@ def main(config: dict):
             data = data.reset_index(drop=True)
 
             cpu_future = None
-            if not top_pool.empty:
+            if not top_pool.empty and (score_improvement_rate<0.01 and iteration>1):
                 cpu_future = cpu_executor.submit(
                     _cpu_random_candidates_with_similarity,
                     iteration,
-                    200,
+                    100,
                     config,
                     top_pool.head(5)[["name", "smiles", "InChIKey"]],
                     seen_inchikeys,
@@ -268,7 +266,7 @@ def main(config: dict):
                     bt.logging.info(f"[Miner] Iteration {iteration}: CPU similarity still running — continuing without it this iteration")
                 except Exception as e:
                     bt.logging.warning(f"[Miner] CPU random/similarity computation failed; proceeding without it: {e}")
-            seen_inchikeys.update([k for k in data.iloc[:500]["InChIKey"].tolist() if k])
+            seen_inchikeys.update([k for k in data["InChIKey"].tolist() if k])
             total_data = data[["name", "smiles", "InChIKey", "score", "Target", "Anti"]]
             top_pool = pd.concat([top_pool, total_data])
             top_pool = top_pool.drop_duplicates(subset=["InChIKey"], keep="first")
