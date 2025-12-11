@@ -97,6 +97,7 @@ def num_rotatable_bonds(smiles: str) -> int:
     except Exception:
         return 0
 
+@lru_cache(maxsize=1000_000)
 def generate_inchikey(smiles: str) -> str:
     """Generate InChIKey from SMILES string."""
     if not smiles:
@@ -162,20 +163,7 @@ def sample_random_valid_molecules(
     focus_neighborhood_of: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     global seen_cache
-    """
-    Sample random valid molecules for a reaction, without using elites or
-    component weights. This is intended to provide a "pure" random pool
-    for similarity-based selection.
     
-    If focus_neighborhood_of is provided, we'll focus sampling around the
-    neighborhood of those molecules by generating names in the vicinity.
-    Excludes previously seen molecules based on avoid_inchikeys.
-
-    Also tracks how many times a molecule has been seen and adjusts the neighborhood
-    sampling range based on the count of times it has been seen.
-    """
-
-    # Extract neighborhoods from each name in the focus DataFrame
     names = []
     bt.logging.info(f"Cache : {seen_cache}")
     for name in focus_neighborhood_of["name"]:
@@ -261,7 +249,7 @@ def sample_random_valid_molecules(
     if avoid_inchikeys:
         df = df[~df["InChIKey"].isin(avoid_inchikeys)]
 
-    return df[["name", "smiles", "InChIKey"]].head(n_samples).copy()
+    return df[["name", "smiles", "InChIKey"]].copy()
 
 
 
@@ -327,7 +315,6 @@ def generate_valid_random_molecules_batch(
     avoid_inchikeys: set[str] | None = None,
     component_weights: dict | None = None,
 ) -> pd.DataFrame:
-    
     reaction_info = get_reaction_info(rxn_id, db_path)
     if not reaction_info:
         bt.logging.error(f"Could not get reaction info for rxn_id {rxn_id}")
@@ -358,11 +345,10 @@ def generate_valid_random_molecules_batch(
     pool_A_ids = _ids_from_pool(molecules_A)
     pool_B_ids = _ids_from_pool(molecules_B)
     pool_C_ids = _ids_from_pool(molecules_C) if is_three_component else []
-
     valid_dfs = []
     seen_keys = set()
     total_valid = 0
-
+    
     while total_valid < n_samples:
         needed = n_samples - total_valid
         batch_size_actual = min(max(batch_size, 300), needed * 2)
@@ -395,10 +381,12 @@ def generate_valid_random_molecules_batch(
             )
             rand_batch = [n for n in rand_batch if n and (n not in emitted_names)]
             batch_molecules = elite_batch + rand_batch
+
         else:
             batch_molecules = generate_molecules_from_pools(
                 rxn_id, batch_size_actual, molecules_A, molecules_B, molecules_C, is_three_component, seed, component_weights
             )
+
         
         if not batch_molecules:
             continue
