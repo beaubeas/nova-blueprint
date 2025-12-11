@@ -179,6 +179,7 @@ def main(config: dict):
     prev_avg_score = None
     current_avg_score = None
     score_improvement_rate = 0.0
+    no_improvement_counter = 0
     
 
     n_samples_first_iteration = n_samples if config["allowed_reaction"] == "rxn:5" else n_samples * 4
@@ -186,29 +187,44 @@ def main(config: dict):
         while time.time() - start < 1800:
             iteration += 1
             iter_start_time = time.time()
-            remaining_time = 1800 - (time.time() - start)
-
-            adjust_for_entropy = False
-            if remaining_time <= 60:
-                adjust_for_entropy = True
 
             component_weights = build_component_weights(top_pool, rxn_id) if not top_pool.empty else None
             elite_df = select_diverse_elites(top_pool, min(100, len(top_pool))) if not top_pool.empty else pd.DataFrame()
             elite_names = elite_df["name"].tolist() if not elite_df.empty else None
-
-            data = generate_valid_random_molecules_batch(
-                rxn_id,
-                n_samples=n_samples_first_iteration if iteration == 1 else n_samples,
-                db_path=DB_PATH,
-                subnet_config=config,
-                batch_size=300,
-                elite_names=elite_names,
-                elite_frac=elite_frac,
-                mutation_prob=mutation_prob,
-                avoid_inchikeys=seen_inchikeys,
-                component_weights=component_weights,
-            )
-
+            if iteration == 1 or no_improvement_counter<3:
+                data = generate_valid_random_molecules_batch(
+                    rxn_id,
+                    n_samples=n_samples_first_iteration if iteration == 1 else n_samples,
+                    db_path=DB_PATH,
+                    subnet_config=config,
+                    batch_size=300,
+                    elite_names=elite_names,
+                    elite_frac=elite_frac,
+                    mutation_prob=mutation_prob,
+                    avoid_inchikeys=seen_inchikeys,
+                    component_weights=component_weights,
+                )
+            elif no_improvement_counter<6:
+                data = _cpu_random_candidates_with_similarity(
+                    iteration,
+                    10,
+                    config,
+                    top_pool.head(50)[["name", "smiles", "InChIKey"]],
+                    seen_inchikeys,
+                    0.6
+                )
+                seed_df = pd.DataFrame(columns=["name", "smiles", "InChIKey", "tanimoto_similarity"])
+            else:
+                data = _cpu_random_candidates_with_similarity(
+                    iteration,
+                    20,
+                    config,
+                    top_pool.head(100)[["name", "smiles", "InChIKey"]],
+                    seen_inchikeys,
+                    0.0
+                )
+                seed_df = pd.DataFrame(columns=["name", "smiles", "InChIKey", "tanimoto_similarity"])
+                no_improvement_counter = 0
             gen_time = time.time() - iter_start_time
             bt.logging.info(
                 f"[Miner] Iteration {iteration}: {len(data)} Samples Generated in ~{gen_time:.2f}s (pre-score)"
@@ -221,6 +237,7 @@ def main(config: dict):
             if not seed_df.empty:
                 data = pd.concat([data, seed_df])
                 data  = data.drop_duplicates(subset=["InChIKey"], keep="first")
+                seed_df = pd.DataFrame(columns=["name", "smiles", "InChIKey", "tanimoto_similarity"])
 
             try:
                 filterd_data = data[~data["InChIKey"].isin(seen_inchikeys)]
@@ -245,15 +262,15 @@ def main(config: dict):
             data = data.reset_index(drop=True)
 
             cpu_future = None
-            if not top_pool.empty and (score_improvement_rate<0.01 and iteration>1):
+            if not top_pool.empty and (score_improvement_rate < 0.02 and score_improvement_rate > 0.0 and iteration>1):
                 cpu_future = cpu_executor.submit(
                     _cpu_random_candidates_with_similarity,
                     iteration,
-                    100,
+                    20,
                     config,
                     top_pool.head(5)[["name", "smiles", "InChIKey"]],
                     seen_inchikeys,
-                    0.9
+                    0.8
                 )
             gpu_start_time = time.time()
             data["Target"] = target_score_from_data(data["smiles"])
@@ -278,22 +295,28 @@ def main(config: dict):
             top_pool = top_pool.drop_duplicates(subset=["InChIKey"], keep="first")
             top_pool = top_pool.sort_values(by="score", ascending=False)
 
-            if adjust_for_entropy:
-                try:
-                    top_95 = top_pool.iloc[:95]
-                    remaining_pool = top_pool.iloc[95:]  # Remaining molecules after the top 95
-                    additional_5 = select_diverse_subset(remaining_pool, top_95["smiles"].tolist(), subset_size=5, entropy_threshold=config['entropy_min_threshold'])
-                    if not additional_5.empty:
-                        top_pool = pd.concat([top_95, additional_5]).reset_index(drop=True)
-                        entropy = compute_maccs_entropy(top_pool['smiles'].to_list())
-                        bt.logging.info(f"[Miner] Iteration {iteration}: New Entropy = {entropy:.4f}")
-                    else:
-                        top_pool = top_pool.head(config["num_molecules"])
-                        entropy = compute_maccs_entropy(top_pool['smiles'].to_list())
-                        bt.logging.info(f"[Miner] Iteration {iteration}: New Entropy = {entropy:.4f}")
-                
-                except Exception as e:
-                    bt.logging.warning(f"[Miner] Entropy handling failed: {e}")
+            remaining_time = 1800 - (time.time() - start)
+            if remaining_time<=60:
+                entropy = compute_maccs_entropy(top_pool.iloc[:config["num_molecules"]]['smiles'].to_list())
+                if entropy>config['entropy_min_threshold']:
+                    top_pool = top_pool.head(config["num_molecules"])
+                    bt.logging.info(f"[Miner] Iteration {iteration}: Sufficient Entropy = {entropy:.4f}, skipping adjustment.")
+                else:
+                    try:
+                        top_95 = top_pool.iloc[:95]
+                        remaining_pool = top_pool.iloc[95:]  # Remaining molecules after the top 95
+                        additional_5 = select_diverse_subset(remaining_pool, top_95["smiles"].tolist(), subset_size=5, entropy_threshold=config['entropy_min_threshold'])
+                        if not additional_5.empty:
+                            top_pool = pd.concat([top_95, additional_5]).reset_index(drop=True)
+                            entropy = compute_maccs_entropy(top_pool['smiles'].to_list())
+                            bt.logging.info(f"[Miner] Iteration {iteration}: New Entropy = {entropy:.4f}")
+                        else:
+                            top_pool = top_pool.head(config["num_molecules"])
+                            entropy = compute_maccs_entropy(top_pool['smiles'].to_list())
+                            bt.logging.info(f"[Miner] Iteration {iteration}: New Entropy = {entropy:.4f}")
+                    
+                    except Exception as e:
+                        bt.logging.warning(f"[Miner] Entropy handling failed: {e}")
             else:
                 top_pool = top_pool.head(config["num_molecules"])
             
@@ -303,6 +326,11 @@ def main(config: dict):
                 if prev_avg_score is not None:
                     score_improvement_rate = (current_avg_score - prev_avg_score) / max(abs(prev_avg_score), 1e-6)
                 prev_avg_score = current_avg_score
+
+            if score_improvement_rate == 0.0:
+                no_improvement_counter += 1
+            else:
+                no_improvement_counter = 0
             iter_total_time = time.time() - iter_start_time
             top_entries = {"molecules": top_pool["name"].tolist()}
             bt.logging.info(
