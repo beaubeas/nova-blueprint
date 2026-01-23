@@ -14,13 +14,15 @@ load_dotenv(override=True)
 warnings.filterwarnings("ignore", category=pd.errors.SettingWithCopyWarning)
 from nova_ph2.combinatorial_db.reactions import get_smiles_from_reaction, get_reaction_info
 from nova_ph2.utils.molecules import get_heavy_atom_count
+from nova_ph2.PSICHIC.psichic_utils import ligand_init
+from sklearn.metrics.pairwise import cosine_similarity
 from collections import defaultdict
 from itertools import chain
 import numpy as np
 import math
+import torch
 from sklearn.cluster import AgglomerativeClustering
 
-# Try to import synthon search
 try:
     from rdkit.Chem import rdSynthonSpaceSearch
     SYNTHON_SEARCH_AVAILABLE = True
@@ -1225,3 +1227,84 @@ def build_component_weights(top_pool: pd.DataFrame, rxn_id: int) -> Dict[str, Di
                 weights[role][comp_id] = avg_weight + 0.15  # Balanced smoothing
     
     return weights
+
+
+def select_similar_molecules(iteration: int, index: int, target_molecule: pd.Series, n: int, similarity_threshold: float, db_path: str, rxn_id: int, config: dict) -> pd.DataFrame:    
+    smarts, roleA, roleB, roleC = get_reaction_info(rxn_id, db_path)
+    is_three_component = True if roleC is not None and roleC != 0 else False
+    molecules_A = get_molecules_by_role(roleA, db_path)
+    molecules_B = get_molecules_by_role(roleB, db_path)
+    molecules_C = get_molecules_by_role(roleC, db_path) if is_three_component else []
+
+    candidate_names = []
+    target_comp_A, target_comp_B, target_comp_C = _parse_components(target_molecule['name'])
+
+    if is_three_component:
+        for mol_id_C, _, _ in molecules_C:
+            candidate_names.append(f"rxn:{rxn_id}:{target_comp_A}:{target_comp_B}:{mol_id_C}")
+        
+        for mol_id_B, _, _ in molecules_B:
+            candidate_names.append(f"rxn:{rxn_id}:{target_comp_A}:{mol_id_B}:{target_comp_C}")
+        
+        for mol_id_A, _, _ in molecules_A:
+            candidate_names.append(f"rxn:{rxn_id}:{mol_id_A}:{target_comp_B}:{target_comp_C}")
+    else:
+        for mol_id_B, _, _ in molecules_B:
+            candidate_names.append(f"rxn:{rxn_id}:{target_comp_A}:{mol_id_B}")
+        
+        for mol_id_A, _, _ in molecules_A:
+            candidate_names.append(f"rxn:{rxn_id}:{mol_id_A}:{target_comp_B}")
+    
+    candidate_names = list(set(candidate_names))
+    
+    data = pd.DataFrame({'name': candidate_names})
+    data = data.sample(min(n, len(data))).reset_index(drop=True)
+    data['smiles'] = data['name'].apply(_get_smiles_from_reaction_cached)
+    data = data[data['smiles'].notna()].reset_index(drop=True)
+    
+    all_smiles = data['smiles'].tolist() + [target_molecule['smiles']]
+    ligand_dict = ligand_init(all_smiles)
+    
+    target_vector = convert_vector(ligand_dict, target_molecule['smiles'])
+    
+    if target_vector is None:
+        bt.logging.warning("Could not generate vector for target molecule")
+        return pd.DataFrame(columns=["name", "smiles", "InChIKey", "similarity"])
+    
+    data['vector'] = data['smiles'].apply(lambda x: convert_vector(ligand_dict, x))
+    data = data[data['vector'].notna()].reset_index(drop=True)
+    
+    data['similarity'] = data['vector'].apply(
+        lambda x: cosine_similarity(target_vector, x)[0][0] if x is not None else 0.0
+    )
+    data = data[data['similarity'] >= similarity_threshold]
+    data['InChIKey'] = data['smiles'].apply(generate_inchikey)
+    
+    data = validate_molecules(data, config)
+    data = data.sort_values('similarity', ascending=False)
+    return data[['name', 'smiles', 'InChIKey']]
+
+
+def convert_vector(ligand_dict: dict, smiles: str) -> np.ndarray:
+    """Convert molecular graph to feature vector using mean pooling."""
+    import torch
+    
+    if smiles not in ligand_dict:
+        return None
+    
+    graph = ligand_dict[smiles]
+    if graph and 'atom_feature' in graph:
+        atom_features = graph['atom_feature']
+        
+        if torch.is_tensor(atom_features):
+            atom_features = atom_features.numpy()
+        else:
+            atom_features = np.array(atom_features)
+        
+        # Mean pooling over atoms to get molecule-level vector
+        mol_vector = np.mean(atom_features, axis=0)
+        
+        # Reshape to (1, n_features) for cosine_similarity
+        return mol_vector.reshape(1, -1)
+    
+    return None
