@@ -1,0 +1,17 @@
+# Used when build context is the repo root (e.g. frontend image).
+# Backend builds use backend_api_python/.dockerignore with its own context.
+
+.git
+**/.git
+.DS_Store
+
+# Do not send unused frontend source build artifacts
+jesusban-Vue-src/node_modules
+jesusban-Vue-src/dist
+
+# The open-source repo ships prebuilt frontend assets in `frontend/dist`,
+# and the frontend image copies them directly, so keep this directory included.
+
+# Backend & DB not needed for frontend stage
+backend_api_python
+docker-compose.override.yml

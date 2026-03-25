@@ -1,0 +1,117 @@
+# Jesusban Docker Compose - One-Click Deployment
+# Usage:
+#   1. Copy env.example to .env and edit your settings
+#      cp backend_api_python/env.example backend_api_python/.env
+#   2. IMPORTANT: Generate and set a secure SECRET_KEY in backend_api_python/.env
+#      SECRET_KEY=$(python3 -c "import secrets; print(secrets.token_hex(32))")
+#      Or edit backend_api_python/.env and replace SECRET_KEY value
+#   3. docker-compose up -d --build
+#   4. Open http://localhost:8888
+#
+# Frontend image: nginx serving prebuilt files from `frontend/dist`.
+# The open-source repo does not require Node.js to build the frontend image.
+#
+# Note: The container will NOT start if SECRET_KEY is using the default value.
+#       This is a security measure to prevent insecure deployments.
+#
+# Docker image sources:
+#   Default uses official Docker Hub images.
+#   To switch source globally, set a single `IMAGE_PREFIX` in project-root `.env`.
+#   Examples: empty (official), `docker.m.daocloud.io/library/`,
+#   `docker.xuanyuan.me/library/`.
+
+services:
+  # ========================
+  # PostgreSQL Database
+  # ========================
+  postgres:
+    image: ${IMAGE_PREFIX:-}postgres:16-alpine
+    container_name: jesusban-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-jesusban}
+      POSTGRES_USER: ${POSTGRES_USER:-jesusban}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-jesusban123}
+      TZ: ${TZ:-Asia/Shanghai}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./backend_api_python/migrations/init.sql:/docker-entrypoint-initdb.d/01-init.sql
+    ports:
+      - "${DB_PORT:-127.0.0.1:5432}:5432"
+    networks:
+      - jesusban-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-jesusban} -d ${POSTGRES_DB:-jesusban}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ========================
+  # Backend API (Python/Flask)
+  # ========================
+  backend:
+    build:
+      context: ./backend_api_python
+      dockerfile: Dockerfile
+      args:
+        BASE_IMAGE: ${IMAGE_PREFIX:-}python:3.12-slim-bookworm
+    container_name: jesusban-backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "${BACKEND_PORT:-127.0.0.1:5000}:5000"
+    volumes:
+      - backend_logs:/app/logs
+      - backend_data:/app/data
+      # Mount .env for runtime config and admin-panel updates
+      - ./backend_api_python/.env:/app/.env
+    environment:
+      - PYTHON_API_HOST=0.0.0.0
+      - PYTHON_API_PORT=5000
+      - TZ=${TZ:-Asia/Shanghai}
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-jesusban}:${POSTGRES_PASSWORD:-jesusban123}@postgres:5432/${POSTGRES_DB:-jesusban}
+      - DB_TYPE=postgresql
+    networks:
+      - jesusban-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ========================
+  # Frontend (Nginx serving prebuilt dist)
+  # ========================
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+      args:
+        RUNTIME_IMAGE: ${IMAGE_PREFIX:-}nginx:1.25-alpine
+    container_name: jesusban-frontend
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-8888}:80"
+    depends_on:
+      - backend
+    networks:
+      - jesusban-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  postgres_data:
+    driver: local
+  backend_logs:
+    driver: local
+  backend_data:
+    driver: local
+
+networks:
+  jesusban-network:
+    driver: bridge
